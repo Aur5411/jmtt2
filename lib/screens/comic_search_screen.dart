@@ -60,18 +60,36 @@ class _ComicSearchScreenState extends State<ComicSearchScreen> {
         body: ComicPager(
           key: Key("$_keywords:$_sortBy"),
           onPage: (int page) async {
+            // [patch] 支持 "-关键词" 排除语法: 剥离排除词后再请求, 结果本地剔除
+            final parsed = parseSearchQuery(_keywords);
+            if (parsed.isKeywordsEmpty) {
+              if (parsed.hasExcludes) {
+                defaultToast(context, "请输入搜索关键词, \"-xxx\" 只作为排除词");
+              }
+              return InnerComicPage(
+                total: 0,
+                list: <ComicSimple>[],
+              );
+            }
             final response = await methods.comicSearch(
-              _keywords,
+              parsed.keywords,
               _sortBy,
               page,
             );
-            // [patch] 屏蔽 Tag: 自动过滤命中屏蔽项的搜索结果
+            // [patch] 屏蔽过滤: 常驻屏蔽 Tag + 本次搜索临时排除词
             final list = response.content
-                .where((comic) => !comicBlockedByTags(comic))
+                .where((comic) =>
+                    !comicBlockedByTags(comic) &&
+                    !comicBlockedByExcludes(comic, parsed.excludes))
                 .toList();
-            if (list.length != response.content.length) {
-              defaultToast(context,
-                  "已按屏蔽 Tag 过滤 ${response.content.length - list.length} 个结果");
+            final filtered = response.content.length - list.length;
+            if (filtered > 0) {
+              defaultToast(
+                context,
+                parsed.hasExcludes
+                    ? "已过滤 $filtered 个结果 (屏蔽 Tag + 排除词 ${parsed.excludes.join("/")})"
+                    : "已按屏蔽 Tag 过滤 $filtered 个结果",
+              );
             }
             return InnerComicPage(
               total: response.total,
