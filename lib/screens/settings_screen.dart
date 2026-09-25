@@ -10,6 +10,8 @@ import 'package:image_picker/image_picker.dart';
 import 'package:jasmine/basic/methods.dart';
 import 'package:jasmine/configs/app_font_size.dart';
 import 'package:jasmine/configs/app_orientation.dart';
+import 'package:jasmine/configs/auto_best_host.dart';
+import 'package:jasmine/configs/reader_preload_count.dart';
 import 'package:jasmine/configs/blocked_tags.dart';
 import 'package:jasmine/configs/drag_region_lock.dart';
 import 'package:jasmine/configs/gesture_speed.dart';
@@ -39,6 +41,7 @@ import '../configs/search_title_words.dart';
 import '../configs/theme.dart';
 import '../configs/two_page_direction.dart';
 import '../configs/using_right_click_pop.dart';
+import '../configs/versions.dart';
 import '../configs/volume_key_control.dart';
 import '../configs/web_dav_password.dart';
 import '../configs/web_dav_sync_switch.dart';
@@ -177,6 +180,15 @@ class _SettingsState extends State<SettingsScreen> {
     }
   }
 
+  /// 当前版本号 (未初始化时安全降级)
+  String _currentVersionText() {
+    try {
+      return currentVersion();
+    } catch (_) {
+      return "unknown";
+    }
+  }
+
   Widget _startupImageSettingTile(BuildContext context) {
     return ListTile(
       onTap: () async {
@@ -217,6 +229,26 @@ class _SettingsState extends State<SettingsScreen> {
       body: SingleChildScrollView(
         child: Column(
           children: [
+            // [patch] 显示当前版本, 便于核对安装的是哪个版本
+            Padding(
+              padding: const EdgeInsets.only(top: 14, bottom: 6),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.info_outline,
+                      size: 16, color: Colors.grey.shade600),
+                  const SizedBox(width: 6),
+                  Text(
+                    "jmtt2 ${_currentVersionText()}",
+                    style: TextStyle(
+                      color: Colors.grey.shade600,
+                      fontSize: 13,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(),
             // [patch] 屏蔽 Tag 设置: 从「系统和应用程序」组内移到设置主界面, 直接可见
             blockedTagsSetting(),
             const Divider(),
@@ -225,6 +257,7 @@ class _SettingsState extends State<SettingsScreen> {
               title: const Text('用户和网络'),
               children: [
                 const Divider(),
+                autoBestHostSetting(),
                 apiHostSetting(),
                 cdnHostSetting(),
                 proxySetting(),
@@ -238,6 +271,8 @@ class _SettingsState extends State<SettingsScreen> {
                     if (await confirmDialog(
                         context, "清除账号信息", "您确定要清除账号信息并退出APP吗?")) {
                       await methods.logout();
+                      // [patch] 同步清除本地登录缓存, 避免下次启动又恢复登录态
+                      await clearLoginCache();
                       exit(0);
                     }
                   },
@@ -253,6 +288,8 @@ class _SettingsState extends State<SettingsScreen> {
                 const Divider(),
                 volumeKeyControlSetting(),
                 noAnimationSetting(),
+                readerPreloadCountSetting(),
+                readerPreloadConcurrencySetting(),
                 const Divider(),
                 gestureSpeedSetting(),
                 dragRegionLockSetting(),

@@ -24,6 +24,10 @@ class _JennyState extends State<Jenny> {
 
   @override
   void initState() {
+    // [patch] 加大图片缓存: 列表来回滚动/重新进入时不必反复解码封面
+    final cache = PaintingBinding.instance.imageCache;
+    cache.maximumSize = 2000;
+    cache.maximumSizeBytes = 256 << 20;
     onDesktopStart();
     themeEvent.subscribe(_setState);
     super.initState();

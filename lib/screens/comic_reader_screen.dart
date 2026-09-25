@@ -14,6 +14,7 @@ import 'package:jasmine/configs/reader_controller_type.dart';
 import 'package:jasmine/configs/drag_region_lock.dart';
 import 'package:jasmine/configs/gesture_speed.dart';
 import 'package:jasmine/configs/reader_direction.dart';
+import 'package:jasmine/configs/reader_preload_count.dart';
 import 'package:jasmine/configs/reader_slider_position.dart';
 import 'package:jasmine/configs/reader_type.dart';
 import 'package:jasmine/configs/reader_zoom_scale.dart';
@@ -325,7 +326,45 @@ abstract class _ComicReaderState extends State<_ComicReader> {
           index,
         ); // 在后台线程入库
       });
+      // [patch] 预取下一页到磁盘缓存, 翻页时直接读本地
+      _preloadAround(index);
     }
+  }
+
+  void _preloadAround(int index) {
+    final images = widget.chapter.images;
+    final id = widget.chapter.id;
+    // [patch] 进入/翻页时向后预缓存 (数量见设置; 0 = 整章)
+    final limit = readerPreloadCount <= 0 ? images.length : readerPreloadCount;
+    final targets = <String>[];
+    for (var i = 1; i <= limit; i++) {
+      final n = index + i;
+      if (n >= images.length) {
+        break;
+      }
+      targets.add(images[n]);
+    }
+    if (targets.isEmpty) {
+      return;
+    }
+    Future(() async {
+      try {
+        // 紧邻的 2 页优先下载, 保证马上要翻到的最先到位
+        await Future.wait(
+          targets.take(2).map((name) => methods.preloadPageImage(id, name)),
+        );
+        // 剩余按并发数批量下载
+        final rest = targets.skip(2).toList();
+        final size = readerPreloadConcurrency;
+        for (var i = 0; i < rest.length; i += size) {
+          await Future.wait(
+            rest.skip(i).take(size).map(
+                  (name) => methods.preloadPageImage(id, name),
+                ),
+          );
+        }
+      } catch (_) {}
+    });
   }
 
   @override
@@ -347,6 +386,8 @@ abstract class _ComicReaderState extends State<_ComicReader> {
     }
     _rebuildSeriesCache();
     super.initState();
+    // [patch] 进入章节立即后台预缓存后续页, 而不是等第一次翻页
+    _preloadAround(widget.startIndex);
   }
 
   @override

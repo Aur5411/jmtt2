@@ -34,9 +34,23 @@ class JM3x4ImageProvider extends ImageProvider<JM3x4ImageProvider> {
 
   Future<ui.Codec> _loadAsync(JM3x4ImageProvider key) async {
     assert(key == this);
-    return ui.instantiateImageCodec(
-      await File(await methods.jm3x4Cover(comicId)).readAsBytes(),
-    );
+    // [patch] 封面加载失败自动重试(最多 3 次)
+    Object? lastError;
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        return ui.instantiateImageCodec(
+          await File(await methods.jm3x4Cover(comicId)).readAsBytes(),
+        );
+      } catch (e) {
+        lastError = e;
+        // 缓存的路径可能已失效(如清理过缓存), 失效后重新取
+        methods.evictCover("jm_3x4_cover", comicId);
+        if (attempt < 2) {
+          await Future.delayed(Duration(milliseconds: 400 * (attempt + 1)));
+        }
+      }
+    }
+    throw lastError!;
   }
 
   @override
@@ -79,9 +93,22 @@ class PageImageProvider extends ImageProvider<PageImageProvider> {
 
   Future<ui.Codec> _loadAsync(PageImageProvider key) async {
     assert(key == this);
-    return ui.instantiateImageCodec(
-      await File(await methods.jmPageImage(id, imageName)).readAsBytes(),
-    );
+    // [patch] 页面加载失败自动重试(最多 3 次)
+    Object? lastError;
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        return ui.instantiateImageCodec(
+          await File(await methods.jmPageImage(id, imageName)).readAsBytes(),
+        );
+      } catch (e) {
+        lastError = e;
+        methods.evictPageImage(id, imageName);
+        if (attempt < 2) {
+          await Future.delayed(Duration(milliseconds: 500 * (attempt + 1)));
+        }
+      }
+    }
+    throw lastError!;
   }
 
   @override

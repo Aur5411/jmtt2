@@ -16,8 +16,34 @@ Future initAndroidDisplayMode() async {
   if (Platform.isAndroid) {
     _androidDisplayMode = await methods.loadProperty(_propertyName);
     _modes = await methods.loadAndroidModes();
+    // [patch] 默认使用设备支持的最高刷新率(如 120Hz)
+    // 仅在用户从未手动设置过时生效, 用户选过则一律以用户的为准
+    if (_androidDisplayMode.trim().isEmpty && _modes.isNotEmpty) {
+      final best = _pickHighestMode(_modes);
+      if (best.isNotEmpty) {
+        _androidDisplayMode = best;
+        await methods.saveProperty(_propertyName, best);
+      }
+    }
     await _changeMode();
   }
+}
+
+/// 从模式列表中挑刷新率最高的一个 (兼容 "120.0" / "120Hz" 等写法)
+String _pickHighestMode(List<String> modes) {
+  var bestRate = -1.0;
+  var best = "";
+  for (final m in modes) {
+    final rate = double.tryParse(m.trim().replaceAll(RegExp(r'[^0-9.]'), ''));
+    if (rate == null) {
+      continue;
+    }
+    if (rate > bestRate) {
+      bestRate = rate;
+      best = m;
+    }
+  }
+  return best;
 }
 
 Future _changeMode() async {

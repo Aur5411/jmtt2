@@ -11,6 +11,10 @@ export 'entities.dart';
 
 const methods = Methods._();
 
+// [patch] 封面路径缓存: 列表滚动/重复进入时不再重复跨语言查询与磁盘 IO
+// (Methods 是 const 单例, 可变缓存只能放文件级)
+final Map<String, String> _coverPathCache = {};
+
 class Methods {
   const Methods._();
 
@@ -224,19 +228,66 @@ class Methods {
   }
 
   Future cleanAllCache() async {
+    // [patch] 清缓存时同步失效封面路径缓存, 避免指向已删除的文件
+    _coverPathCache.clear();
     return _invoke("clean_all_cache", "params");
   }
 
+  Future<String> _cover(String method, int comicId) async {
+    final key = "$method:$comicId";
+    final cached = _coverPathCache[key];
+    if (cached != null && cached.isNotEmpty) {
+      return cached;
+    }
+    final path = await _invoke(method, comicId) as String;
+    if (path.isNotEmpty) {
+      _coverPathCache[key] = path;
+    }
+    return path;
+  }
+
   Future<String> jm3x4Cover(int comicId) {
-    return _invoke("jm_3x4_cover", comicId);
+    return _cover("jm_3x4_cover", comicId);
   }
 
   Future<String> jmSquareCover(int comicId) {
-    return _invoke("jm_square_cover", comicId);
+    return _cover("jm_square_cover", comicId);
   }
 
   Future<String> jmPageImage(int id, String imageName) {
-    return _invoke("jm_page_image", {"id": id, "image_name": imageName});
+    // [patch] 页面图片路径缓存: 翻回上一页 / 重进章节不再重复跨语言查询
+    final key = "page:$id:$imageName";
+    final cached = _coverPathCache[key];
+    if (cached != null && cached.isNotEmpty) {
+      return Future.value(cached);
+    }
+    return _invoke("jm_page_image", {"id": id, "image_name": imageName})
+        .then((path) {
+      if (path is String && path.isNotEmpty) {
+        _coverPathCache[key] = path;
+      }
+      return path as String;
+    });
+  }
+
+  /// [patch] 预取页面图片到磁盘缓存, 翻页时直接读本地
+  Future<void> preloadPageImage(int id, String imageName) async {
+    final key = "page:$id:$imageName";
+    if (_coverPathCache.containsKey(key)) {
+      return;
+    }
+    try {
+      await jmPageImage(id, imageName);
+    } catch (_) {}
+  }
+
+  /// [patch] 图片加载失败时失效路径缓存(文件可能已被清理), 下次重新向 Rust 取
+  void evictPageImage(int id, String imageName) {
+    _coverPathCache.remove("page:$id:$imageName");
+  }
+
+  void evictCover(String method, int comicId) {
+    _coverPathCache.remove("$method:$comicId");
   }
 
   Future deleteJmPageImageCache(int id, String imageName) {

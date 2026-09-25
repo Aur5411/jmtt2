@@ -37,12 +37,23 @@ set _loginState(LoginStatus value) {
 Future initLogin(BuildContext context) async {
   try {
     _loginState = LoginStatus.logging;
-    final preLogin = await methods.preLogin();
+    // [patch] 本地缓存过登录信息 -> 立即进入, 后台再校验刷新
+    // (启动不再卡在 preLogin 网络请求上, 网络抖动也不会被误判为未登录)
+    final cached = await _loadCachedSelfInfo();
+    if (cached != null) {
+      _selfInfo = cached;
+      _loginState = LoginStatus.loginSuccess;
+      _refreshLoginInBackground(context);
+      return;
+    }
+    final preLogin =
+        await methods.preLogin().timeout(const Duration(seconds: 25));
     _loginMessage = preLogin.message ?? "";
     if (!preLogin.preSet) {
       _loginState = LoginStatus.notSet;
     } else if (preLogin.preLogin) {
       _selfInfo = preLogin.selfInfo!;
+      await _cacheSelfInfo(_selfInfo);
       _loginState = LoginStatus.loginSuccess;
       checkDailySignStatus(context);
       fav(context);
@@ -51,10 +62,68 @@ Future initLogin(BuildContext context) async {
     }
   } catch (e, st) {
     debugPrient("$e\n$st");
-    _loginState = LoginStatus.loginField;
+    // [patch] 网络异常时若有缓存则保持登录态, 不再一律判成未登录
+    final cached = await _loadCachedSelfInfo();
+    if (cached != null) {
+      _selfInfo = cached;
+      _loginState = LoginStatus.loginSuccess;
+      _refreshLoginInBackground(context);
+    } else {
+      _loginState = LoginStatus.loginField;
+    }
   } finally {
     reloadIsPro();
   }
+}
+
+const _selfInfoCacheKey = "cached_self_info";
+
+Future<void> _cacheSelfInfo(SelfInfo info) async {
+  try {
+    await methods.saveProperty(_selfInfoCacheKey, jsonEncode(info.toJson()));
+  } catch (_) {}
+}
+
+Future<void> clearLoginCache() async {
+  try {
+    await methods.saveProperty(_selfInfoCacheKey, "");
+  } catch (_) {}
+}
+
+Future<SelfInfo?> _loadCachedSelfInfo() async {
+  try {
+    final str = await methods.loadProperty(_selfInfoCacheKey);
+    if (str.isEmpty) {
+      return null;
+    }
+    return SelfInfo.fromJson(jsonDecode(str));
+  } catch (_) {
+    return null;
+  }
+}
+
+/// 后台重新校验登录态; 失败不影响当前登录状态
+void _refreshLoginInBackground(BuildContext context) {
+  Future(() async {
+    try {
+      final preLogin =
+          await methods.preLogin().timeout(const Duration(seconds: 25));
+      if (preLogin.preLogin && preLogin.selfInfo != null) {
+        _selfInfo = preLogin.selfInfo!;
+        await _cacheSelfInfo(_selfInfo);
+        _event.broadcast();
+        checkDailySignStatus(context);
+        fav(context);
+      } else if (!preLogin.preSet) {
+        await clearLoginCache();
+        _loginState = LoginStatus.notSet;
+      }
+    } catch (e, st) {
+      debugPrient("$e\n$st");
+    } finally {
+      reloadIsPro();
+    }
+  });
 }
 
 List<FavoriteFolderItem> favData = [];
@@ -151,6 +220,7 @@ Future login(String username, String password, BuildContext context) async {
     final selfInfo = await methods.login(username, password);
     _selfInfo = selfInfo;
     _loginState = LoginStatus.loginSuccess;
+    await _cacheSelfInfo(selfInfo);
     checkDailySignStatus(context);
     fav(context);
   } catch (e, st) {

@@ -2,6 +2,7 @@ import 'package:event/event.dart';
 import 'package:flutter/material.dart';
 import 'package:jasmine/basic/entities.dart';
 import 'package:jasmine/basic/methods.dart';
+import 'package:jasmine/configs/blocked_tags.dart';
 
 import '../../basic/commons.dart';
 import 'floating_search_bar.dart';
@@ -18,7 +19,21 @@ set blockStore(List<Block> values) {
 
 set searchHistories(List<SearchHistory> values) {
   _histories.clear();
-  _histories.addAll(values);
+  // [patch] 搜索历史只显示用户实际输入的关键词:
+  // 搜索请求里自动拼接的屏蔽 Tag ("-xxx") 属于实现细节, 不应出现在历史中
+  final seen = <String>{};
+  for (final value in values) {
+    final keywords = parseSearchQuery(value.searchQuery).keywords;
+    if (keywords.isEmpty || !seen.add(keywords)) {
+      continue;
+    }
+    _histories.add(
+      SearchHistory(
+        searchQuery: keywords,
+        lastSearchTime: value.lastSearchTime,
+      ),
+    );
+  }
   _event.broadcast();
 }
 

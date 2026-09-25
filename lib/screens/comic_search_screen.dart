@@ -30,6 +30,27 @@ class _ComicSearchScreenState extends State<ComicSearchScreen> {
     return rightClickPop(child: buildScreen(context), context: context);
   }
 
+  /// 把常驻屏蔽名单拼成 "-词" 附加到搜索串, 交给服务端按 tag 索引排除
+  String _queryWithBlockedTags(String input) {
+    final extras = <String>[];
+    for (final tag in currentBlockedTags()) {
+      for (final w in tag.split(RegExp(r'\s+'))) {
+        final t = w.trim();
+        if (t.isEmpty) {
+          continue;
+        }
+        if (input.contains("-$t")) {
+          continue;
+        }
+        extras.add("-$t");
+      }
+    }
+    if (extras.isEmpty) {
+      return input;
+    }
+    return [input, ...extras].join(' ');
+  }
+
   Widget buildScreen(BuildContext context) {
     return ComicFloatingSearchBarScreen(
       controller: _controller,
@@ -60,23 +81,30 @@ class _ComicSearchScreenState extends State<ComicSearchScreen> {
         body: ComicPager(
           key: Key("$_keywords:$_sortBy"),
           onPage: (int page) async {
-            // [patch] 支持 "-关键词" 排除语法: 剥离排除词后再请求, 结果本地剔除
+            // [patch] Tag 屏蔽交给服务端:
+            // 列表数据只有 8 个字段(无 tags), 本地只能按标题/简介文本匹配, 漏网很多;
+            // 把常驻屏蔽名单拼成 "-词" 一起发给服务端, 服务端有 tag 索引, 能真正排除。
+            // 若服务端不支持该语法(结果为空), 回落为纯关键词再搜, 本地继续兜底过滤。
             final parsed = parseSearchQuery(_keywords);
-            if (parsed.isKeywordsEmpty) {
-              if (parsed.hasExcludes) {
-                defaultToast(context, "请输入搜索关键词, \"-xxx\" 只作为排除词");
-              }
-              return InnerComicPage(
-                total: 0,
-                list: <ComicSimple>[],
-              );
-            }
-            final response = await methods.comicSearch(
-              parsed.keywords,
+            final query = _queryWithBlockedTags(_keywords);
+            var response = await methods.comicSearch(
+              query,
               _sortBy,
               page,
             );
-            // [patch] 屏蔽过滤: 常驻屏蔽 Tag + 本次搜索临时排除词
+            if (query != _keywords &&
+                !parsed.isKeywordsEmpty &&
+                response.content.isEmpty) {
+              response = await methods.comicSearch(
+                parsed.keywords,
+                _sortBy,
+                page,
+              );
+            }
+            if (parsed.isKeywordsEmpty && response.content.isEmpty) {
+              defaultToast(context, "请输入搜索关键词, \"-xxx\" 只作为排除词");
+            }
+            // [patch] 本地兜底: 常驻屏蔽 Tag + 本次搜索临时排除词
             final list = response.content
                 .where((comic) =>
                     !comicBlockedByTags(comic) &&
@@ -87,7 +115,7 @@ class _ComicSearchScreenState extends State<ComicSearchScreen> {
               defaultToast(
                 context,
                 parsed.hasExcludes
-                    ? "已过滤 $filtered 个结果 (屏蔽 Tag + 排除词 ${parsed.excludes.join("/")})"
+                    ? "已过滤 $filtered 个结果 (排除词 ${parsed.excludes.join("/")})"
                     : "已按屏蔽 Tag 过滤 $filtered 个结果",
               );
             }

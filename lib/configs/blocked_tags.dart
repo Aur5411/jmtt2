@@ -140,22 +140,90 @@ bool comicBlockedByTags(ComicBasic comic) {
   return false;
 }
 
-/// 设置页入口: 屏蔽 Tag 管理
+/// 设置页入口: 屏蔽 Tag 管理 (醒目卡片, 常驻设置主界面顶部)
 Widget blockedTagsSetting() {
   return StatefulBuilder(
     builder: (BuildContext context, void Function(void Function()) setState) {
-      return ListTile(
-        leading: const Icon(Icons.block),
-        title: const Text("屏蔽 Tag 设置"),
-        subtitle: Text(
-          _blockedTags.isEmpty
-              ? "未屏蔽任何 Tag (搜索/列表自动隐藏命中内容)"
-              : "已屏蔽 ${_blockedTags.length} 个: ${_blockedTags.take(5).join(" / ")}${_blockedTags.length > 5 ? " ..." : ""}",
+      final scheme = Theme.of(context).colorScheme;
+      final count = _blockedTags.length;
+      return Card(
+        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () async {
+            await _manageBlockedTags(context);
+            setState(() {});
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(
+              children: [
+                Container(
+                  width: 42,
+                  height: 42,
+                  decoration: BoxDecoration(
+                    color: scheme.primaryContainer,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    Icons.block,
+                    color: scheme.onPrimaryContainer,
+                    size: 22,
+                  ),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        "屏蔽 Tag 设置",
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        count == 0
+                            ? "未屏蔽任何 Tag，点击添加"
+                            : "已屏蔽 $count 个：${_blockedTags.take(3).join(" / ")}${count > 3 ? " ..." : ""}",
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                if (count > 0)
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: scheme.primary,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      "$count",
+                      style: TextStyle(
+                        color: scheme.onPrimary,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                const SizedBox(width: 6),
+                Icon(
+                  Icons.chevron_right,
+                  color: scheme.onSurfaceVariant,
+                  size: 20,
+                ),
+              ],
+            ),
+          ),
         ),
-        onTap: () async {
-          await _manageBlockedTags(context);
-          setState(() {});
-        },
       );
     },
   );

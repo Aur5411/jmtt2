@@ -6,6 +6,8 @@ import 'package:jasmine/configs/android_version.dart';
 import 'package:jasmine/configs/always_enter_browser.dart';
 import 'package:jasmine/configs/app_font_size.dart';
 import 'package:jasmine/configs/app_orientation.dart';
+import 'package:jasmine/configs/auto_best_host.dart';
+import 'package:jasmine/configs/reader_preload_count.dart';
 import 'package:jasmine/configs/blocked_tags.dart';
 import 'package:jasmine/configs/display_jmcode.dart';
 import 'package:jasmine/configs/download_thread_count.dart';
@@ -99,5 +101,9 @@ Future initConfigs(BuildContext context) async {
   await initAppOrientation();
   await initIgnoreVewLog();
   await initIgnoreUpgradePop();
+  await initAutoBestHost();
+  await initReaderPreloadCount();
+  // [patch] 后台测速并切到最快的 API / 图片源, 不阻塞启动
+  autoSelectBestHosts();
   // [patch] 去除检测更新: 不再自动检查新版本, 保证当前版本持续可用
 }

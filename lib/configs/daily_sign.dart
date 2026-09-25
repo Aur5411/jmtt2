@@ -42,17 +42,28 @@ Future<void> checkDailySignStatus(BuildContext context,
     return;
   }
   _setDailySignStatus(DailySignStatus.checking);
-  try {
-    final msg = await methods.daily(selfInfo.uid);
-    if (toast) {
-      defaultToast(context, msg.isNotEmpty ? msg : "已打卡");
+  // [patch] 打卡失败自动重试(最多 3 次), 网络抖动不再直接判定失败
+  Object? lastError;
+  for (var attempt = 0; attempt < 3; attempt++) {
+    try {
+      final msg = await methods
+          .daily(selfInfo.uid)
+          .timeout(const Duration(seconds: 20));
+      if (toast) {
+        defaultToast(context, msg.isNotEmpty ? msg : "已打卡");
+      }
+      _setDailySignStatus(DailySignStatus.signed);
+      return;
+    } catch (e, st) {
+      debugPrient("$e\n$st");
+      lastError = e;
+      if (attempt < 2) {
+        await Future.delayed(Duration(seconds: 2 * (attempt + 1)));
+      }
     }
-    _setDailySignStatus(DailySignStatus.signed);
-  } catch (e, st) {
-    debugPrient("$e\n$st");
-    if (toast) {
-      defaultToast(context, "$e");
-    }
-    _setDailySignStatus(DailySignStatus.error);
   }
+  if (toast) {
+    defaultToast(context, "$lastError");
+  }
+  _setDailySignStatus(DailySignStatus.error);
 }

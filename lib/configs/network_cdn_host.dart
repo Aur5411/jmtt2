@@ -29,6 +29,32 @@ Future<void> initCdnHost() async {
   _cdnHost = await methods.loadCdnHost();
 }
 
+/// 并发测速所有候选图片源, 切到延迟最低的一个
+Future<void> autoSelectBestCdnHost() async {
+  try {
+    final results = <MapEntry<String, int>>[];
+    await Future.wait(_cdnList.map((host) async {
+      try {
+        final ping = await methods
+            .pingCdn(host as String)
+            .timeout(const Duration(seconds: 8));
+        if (ping > 0) {
+          results.add(MapEntry(host, ping));
+        }
+      } catch (_) {}
+    }));
+    if (results.isEmpty) {
+      return;
+    }
+    results.sort((a, b) => a.value.compareTo(b.value));
+    final best = results.first.key;
+    if (best.isNotEmpty && best != _cdnHost) {
+      await methods.saveCdnHost(best);
+      _cdnHost = best;
+    }
+  } catch (_) {}
+}
+
 Future chooseCdnHost(BuildContext context) async {
   final choose = await chooseCdnDialog(context);
   if (choose != null) {

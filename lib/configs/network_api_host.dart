@@ -182,6 +182,32 @@ class PingStatus extends StatelessWidget {
   }
 }
 
+/// 并发测速所有候选源, 切到延迟最低的一个
+Future<void> autoSelectBestApiHost() async {
+  try {
+    final results = <MapEntry<String, int>>[];
+    await Future.wait(_apiList.map((host) async {
+      try {
+        final ping = await methods
+            .ping(host as String)
+            .timeout(const Duration(seconds: 8));
+        if (ping > 0) {
+          results.add(MapEntry(host, ping));
+        }
+      } catch (_) {}
+    }));
+    if (results.isEmpty) {
+      return;
+    }
+    results.sort((a, b) => a.value.compareTo(b.value));
+    final best = results.first.key;
+    if (best.isNotEmpty && best != _apiHost) {
+      await methods.saveApiHost(best);
+      _apiHost = best;
+    }
+  } catch (_) {}
+}
+
 Future chooseApiHost(BuildContext context) async {
   final choose = await chooseApiDialog(context);
   if (choose != null) {
