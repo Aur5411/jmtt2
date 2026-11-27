@@ -141,8 +141,14 @@ Widget createFavoriteFolderItemTile(BuildContext context) {
       if (name == null) {
         return;
       }
-      await methods.createFavoriteFolder(name);
-      fav(context);
+      try {
+        await methods.createFavoriteFolder(name);
+      } catch (e) {
+        // [patch] 失败要说清原因, 原来无论成败都提示「创建成功」
+        defaultToast(context, "创建失败: $e");
+        return;
+      }
+      await fav(context);
       defaultToast(context, "创建成功");
     },
   );
@@ -156,6 +162,15 @@ Widget deleteFavoriteFolderItemTile(BuildContext context) {
         defaultToast(context, "请先登录");
         return;
       }
+      // [patch] 文件夹列表可能是空的(启动刷新失败过), 先补拉一次再让用户选,
+      // 否则弹窗里只剩「默认 / 不删除」, 等于无法删除任何文件夹
+      if (favData.isEmpty) {
+        await fav(context, silent: true);
+      }
+      if (favData.isEmpty) {
+        defaultToast(context, "收藏夹列表获取失败, 请检查网络后重试");
+        return;
+      }
       var j = favData.map((i) {
         return MapEntry(i.name, i.fid);
       }).toList();
@@ -166,8 +181,13 @@ Widget deleteFavoriteFolderItemTile(BuildContext context) {
         values: Map.fromEntries(j),
       );
       if (v != null && v != 0) {
-        await methods.deleteFavoriteFolder(v);
-        fav(context);
+        try {
+          await methods.deleteFavoriteFolder(v);
+        } catch (e) {
+          defaultToast(context, "删除失败: $e");
+          return;
+        }
+        await fav(context);
         defaultToast(context, "删除成功");
       }
     },
@@ -180,6 +200,14 @@ Widget renameFavoriteFolderItemTile(BuildContext context) {
     onTap: () async {
       if (loginStatus != LoginStatus.loginSuccess) {
         defaultToast(context, "请先登录");
+        return;
+      }
+      // [patch] 同删除: 列表为空时先补拉, 拉不到就明确告知而不是弹个空列表
+      if (favData.isEmpty) {
+        await fav(context, silent: true);
+      }
+      if (favData.isEmpty) {
+        defaultToast(context, "收藏夹列表获取失败, 请检查网络后重试");
         return;
       }
       var j = favData.map((i) {
@@ -197,21 +225,45 @@ Widget renameFavoriteFolderItemTile(BuildContext context) {
         if (name == null) {
           return;
         }
-        await methods.renameFavoriteFolder(v, name);
-        fav(context);
+        try {
+          await methods.renameFavoriteFolder(v, name);
+        } catch (e) {
+          defaultToast(context, "重命名失败: $e");
+          return;
+        }
+        await fav(context);
         defaultToast(context, "重命名成功");
       }
     },
   );
 }
 
-Future fav(BuildContext buildContext) async {
-  try {
-    favData = (await methods.favorite()).folderList;
-  } catch (e, st) {
-    debugPrient("$e\n$st");
-    defaultToast(buildContext, "$e");
+/// [patch] 拉取收藏文件夹列表:
+/// 原来失败一次就只弹个 toast, favData 永久停在旧值(首次为空), 之后
+/// 「移动到资料夹」列表全空、收藏夹页只剩「全部」, 用户看到的就是
+/// 「收藏功能偶尔用不了」。现在失败自动再试一次, 并返回是否成功,
+/// 供调用方决定要不要重试/提示。
+Future<bool> fav(BuildContext buildContext, {bool silent = false}) async {
+  for (var attempt = 0; attempt < 2; attempt++) {
+    try {
+      favData = (await methods.favorite()).folderList;
+      return true;
+    } catch (e, st) {
+      debugPrient("fav failed(${attempt + 1}): $e\n$st");
+      if (attempt == 0) {
+        await Future.delayed(const Duration(milliseconds: 500));
+        continue;
+      }
+      if (!silent) {
+        // [patch] 页面可能已经销毁, 弹 toast 包一层保护, 顺带兼容旧 Flutter
+        // (不依赖 BuildContext.mounted)
+        try {
+          defaultToast(buildContext, "收藏夹信息获取失败: $e");
+        } catch (_) {}
+      }
+    }
   }
+  return false;
 }
 
 Future login(String username, String password, BuildContext context) async {

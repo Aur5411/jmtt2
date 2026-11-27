@@ -25,6 +25,12 @@ class _ComicSearchScreenState extends State<ComicSearchScreen> {
   late var _keywords = widget.initKeywords;
   SortBy _sortBy = sortByDefault;
 
+  /// [patch] 搜索序号: 原来 ComicPager 的 Key 只由关键词+排序拼成,
+  /// 用同一个关键词再搜一次(例如刚改了屏蔽 Tag、或上次结果异常想重试)
+  /// Key 不变 -> pager 状态被复用 -> 根本不重新请求, 表现为「搜索没反应」。
+  /// 每次提交都自增, 保证一定重建并重新拉取。
+  int _searchSeq = 0;
+
   @override
   Widget build(BuildContext context) {
     return rightClickPop(child: buildScreen(context), context: context);
@@ -57,6 +63,8 @@ class _ComicSearchScreenState extends State<ComicSearchScreen> {
       onQuery: (value) {
         setState(() {
           _keywords = value;
+          // [patch] 同一关键词重复提交时也强制重建 pager, 保证真的重发请求
+          _searchSeq++;
         });
       },
       child: Scaffold(
@@ -65,7 +73,19 @@ class _ComicSearchScreenState extends State<ComicSearchScreen> {
           actions: [
             IconButton(
               onPressed: () async {
-                searchHistories = await methods.lastSearchHistories(20);
+                // [patch] 历史接口偶发失败时不再让磁贴点击毫无反应:
+                // 失败就当没有历史, 面板照常弹出(板块标签仍可用)
+                try {
+                  searchHistories = await methods.lastSearchHistories(20);
+                } catch (e) {
+                  searchHistories = const [];
+                  if (mounted) {
+                    defaultToast(context, "搜索历史加载失败: $e");
+                  }
+                }
+                if (!mounted) {
+                  return;
+                }
                 _controller.display(modifyInput: _keywords);
               },
               icon: const Icon(Icons.search),
@@ -74,12 +94,14 @@ class _ComicSearchScreenState extends State<ComicSearchScreen> {
             buildOrderSwitch(context, _sortBy, (value) {
               setState(() {
                 _sortBy = value;
+                // [patch] 排序切换也走自增, 避免同 Key 复用旧列表
+                _searchSeq++;
               });
             }),
           ],
         ),
         body: ComicPager(
-          key: Key("$_keywords:$_sortBy"),
+          key: Key("$_keywords:$_sortBy:$_searchSeq"),
           onPage: (int page) async {
             // [patch] Tag 屏蔽交给服务端:
             // 列表数据只有 8 个字段(无 tags), 本地只能按标题/简介文本匹配, 漏网很多;
@@ -87,21 +109,31 @@ class _ComicSearchScreenState extends State<ComicSearchScreen> {
             // 若服务端不支持该语法(结果为空), 回落为纯关键词再搜, 本地继续兜底过滤。
             final parsed = parseSearchQuery(_keywords);
             final query = _queryWithBlockedTags(_keywords);
-            var response = await methods.comicSearch(
-              query,
-              _sortBy,
-              page,
-            );
-            if (query != _keywords &&
-                !parsed.isKeywordsEmpty &&
-                response.content.isEmpty) {
+            ComicsResponse response;
+            try {
               response = await methods.comicSearch(
-                parsed.keywords,
+                query,
                 _sortBy,
                 page,
               );
+              // [patch] 回落条件放宽: 原来要求「有关键词」才回落, 纯排除词搜索
+              // (只输入 "-xxx") 首请求为空时直接给空页; 现在只要拼了屏蔽词且
+              // 结果为空就回落到原始输入重搜一次
+              if (query != _keywords && response.content.isEmpty) {
+                response = await methods.comicSearch(
+                  _keywords,
+                  _sortBy,
+                  page,
+                );
+              }
+            } catch (e) {
+              // [patch] 搜索失败给出可读原因(原来的裸异常只会显示
+              // 「出错, 点击重试」, 用户不知道是断网还是被限流)
+              throw StateError("搜索失败: $e");
             }
-            if (parsed.isKeywordsEmpty && response.content.isEmpty) {
+            final isEmpty = response.content.isEmpty;
+            // [patch] 提示只在第一页弹, 原来每次翻页都弹一次, 滚动时连续弹窗
+            if (page == 1 && parsed.isKeywordsEmpty && isEmpty && mounted) {
               defaultToast(context, "请输入搜索关键词, \"-xxx\" 只作为排除词");
             }
             // [patch] 本地兜底: 常驻屏蔽 Tag + 本次搜索临时排除词
@@ -111,7 +143,7 @@ class _ComicSearchScreenState extends State<ComicSearchScreen> {
                     !comicBlockedByExcludes(comic, parsed.excludes))
                 .toList();
             final filtered = response.content.length - list.length;
-            if (filtered > 0) {
+            if (page == 1 && filtered > 0 && mounted) {
               defaultToast(
                 context,
                 parsed.hasExcludes
@@ -119,8 +151,11 @@ class _ComicSearchScreenState extends State<ComicSearchScreen> {
                     : "已按屏蔽 Tag 过滤 $filtered 个结果",
               );
             }
+            // [patch] total 扣掉本地过滤数: 原来直接用服务端 total, 被屏蔽的
+            // 条目仍计入总数, 导致页数偏多、后几页翻出空页
+            final total = response.total - filtered;
             return InnerComicPage(
-              total: response.total,
+              total: total < 0 ? 0 : total,
               list: list,
               redirectAid: response.redirectAid,
             );

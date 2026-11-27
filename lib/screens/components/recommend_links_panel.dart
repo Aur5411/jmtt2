@@ -1,11 +1,9 @@
 import 'package:flutter/material.dart';
 
-import '../../basic/commons.dart';
-import '../../configs/disable_recommend_content.dart';
-import '../../configs/is_pro.dart';
-import '../../configs/recommend_links.dart';
-
-class RecommendLinksPanel extends StatefulWidget {
+// [patch] 推广面板整块停用: 服务端 config_links 下发的所有条目
+// (pika客户端 / hanime客户端 / 网络加速 等) 一律不再展示。
+// 保留这个类是为了不破坏既有 import 路径, 内容恒为空。
+class RecommendLinksPanel extends StatelessWidget {
   final EdgeInsetsGeometry padding;
 
   const RecommendLinksPanel({
@@ -14,63 +12,7 @@ class RecommendLinksPanel extends StatefulWidget {
   });
 
   @override
-  State<StatefulWidget> createState() => _RecommendLinksPanelState();
-}
-
-class _RecommendLinksPanelState extends State<RecommendLinksPanel> {
-  @override
-  void initState() {
-    recommendLinksEvent.subscribe(_setState);
-    disableRecommendContentEvent.subscribe(_setState);
-    super.initState();
-  }
-
-  @override
-  void dispose() {
-    recommendLinksEvent.unsubscribe(_setState);
-    disableRecommendContentEvent.unsubscribe(_setState);
-    super.dispose();
-  }
-
-  void _setState(_) {
-    setState(() {});
-  }
-
-  @override
   Widget build(BuildContext context) {
-    // [patch] 移除书架页 "网络加速" 推广条目 (服务端下发, 按标题过滤)
-    final links = Map<String, String>.fromEntries(
-      currentRecommendLinks().entries
-          .where((entry) => !entry.key.contains("网络加速")),
-    );
-    if (links.isEmpty) {
-      return const SizedBox.shrink();
-    }
-    if (isPro && currentDisableRecommendContent()) {
-      return const SizedBox.shrink();
-    }
-
-    final captionStyle =
-        Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey);
-    final linkStyle = Theme.of(context).textTheme.bodySmall?.copyWith(
-          decoration: TextDecoration.underline,
-          decorationColor: Colors.grey.shade600,
-          color: Colors.grey.shade600,
-        );
-
-    return Container(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const SizedBox(height: 6),
-          ...links.entries.map((entry) {
-              return ListTile(
-                onTap: () => openUrl(entry.value),
-                title: Text(entry.key),
-              );
-            }),
-        ],
-      ),
-    );
+    return const SizedBox.shrink();
   }
 }

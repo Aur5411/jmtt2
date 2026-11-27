@@ -40,6 +40,107 @@ int? _parseIntTimestamp(dynamic value) {
   return int.tryParse("$value");
 }
 
+// [patch] 反序列化容错工具: 服务端偶发少字段/类型漂移(如 FID 传成字符串)时
+// 不再整页抛 TypeError, 而是退化成安全默认值, 让列表继续显示
+int _asInt(dynamic value, [int fallback = 0]) {
+  if (value is int) {
+    return value;
+  }
+  if (value is num) {
+    return value.toInt();
+  }
+  if (value == null) {
+    return fallback;
+  }
+  return int.tryParse("$value") ?? fallback;
+}
+
+int? _asIntOrNull(dynamic value) {
+  if (value == null) {
+    return null;
+  }
+  if (value is int) {
+    return value;
+  }
+  if (value is num) {
+    return value.toInt();
+  }
+  return int.tryParse("$value");
+}
+
+String _asString(dynamic value, [String fallback = ""]) {
+  if (value == null) {
+    return fallback;
+  }
+  return value is String ? value : "$value";
+}
+
+// [patch] 数值型字段(如 expPercent)容错: 服务端给字符串或不给时退化为 0
+double _asDouble(dynamic value, [double fallback = 0]) {
+  if (value is double) {
+    return value;
+  }
+  if (value is num) {
+    return value.toDouble();
+  }
+  if (value == null) {
+    return fallback;
+  }
+  return double.tryParse("$value") ?? fallback;
+}
+
+List<dynamic> _asList(dynamic value) {
+  if (value is List) {
+    return value;
+  }
+  return const [];
+}
+
+/// [patch] 字符串列表容错: 元素强转失败时按字符串归一, 不整条抛
+List<String> _asStringList(dynamic value) {
+  final result = <String>[];
+  for (final item in _asList(value)) {
+    if (item == null) {
+      continue;
+    }
+    result.add(item is String ? item : "$item");
+  }
+  return result;
+}
+
+bool _asBool(dynamic value, [bool fallback = false]) {
+  if (value is bool) {
+    return value;
+  }
+  if (value == null) {
+    return fallback;
+  }
+  final s = "$value".toLowerCase();
+  if (s == "true" || s == "1") {
+    return true;
+  }
+  if (s == "false" || s == "0") {
+    return false;
+  }
+  return fallback;
+}
+
+/// 列表项解析保护: 单条脏数据只跳过这一条, 不会让整个列表加载失败
+List<T> _mapList<T>(dynamic value, T Function(Map<String, dynamic>) build) {
+  final result = <T>[];
+  for (final item in _asList(value)) {
+    if (item is! Map) {
+      continue;
+    }
+    try {
+      result.add(build(item.cast<String, dynamic>()));
+    } catch (_) {
+      continue;
+    }
+  }
+  return result;
+}
+
 class Page<T> {
   late final List<T> list;
   late final int total;
@@ -51,8 +152,9 @@ class CountPage<T> {
   late final int count;
 
   CountPage.fromJson(Map<String, dynamic> json) {
-    total = json["total"];
-    count = json["count"];
+    // [patch] 缺字段/类型漂移时退化为 0, 不再抛 TypeError 导致整页加载失败
+    total = _asInt(json["total"]);
+    count = _asInt(json["count"]);
   }
 
   Map<String, dynamic> toJson() {
@@ -79,9 +181,10 @@ class SearchPage {
   late final int? redirectAid;
 
   SearchPage.fromJson(Map<String, dynamic> json) {
-    searchQuery = json['search_query'];
-    total = json['total'];
-    redirectAid = json['redirect_aid'];
+    // [patch] 容错: search_query/total 缺失或类型不符不再抛
+    searchQuery = _asString(json['search_query']);
+    total = _asInt(json['total']);
+    redirectAid = _asIntOrNull(json['redirect_aid']);
   }
 
   Map<String, dynamic> toJson() {
@@ -97,8 +200,8 @@ class ComicsResponse extends SearchPage {
   late final List<ComicSimple> content;
 
   ComicsResponse.fromJson(Map<String, dynamic> json) : super.fromJson(json) {
-    content =
-        List.from(json['content']).map((e) => ComicSimple.fromJson(e)).toList();
+    // [patch] content 为 null / 含脏条目时不再整页失败
+    content = _mapList(json['content'], (e) => ComicSimple.fromJson(e));
   }
 
   @override
@@ -176,10 +279,9 @@ class CategoriesResponse {
   late final List<Block> blocks;
 
   CategoriesResponse.fromJson(Map<String, dynamic> json) {
-    categories = List.from(json['categories'])
-        .map((e) => Categories.fromJson(e))
-        .toList();
-    blocks = List.from(json['blocks']).map((e) => Block.fromJson(e)).toList();
+    // [patch] 容错: 分类接口缺字段时退化为空列表, 不让首页/搜索入口崩
+    categories = _mapList(json['categories'], (e) => Categories.fromJson(e));
+    blocks = _mapList(json['blocks'], (e) => Block.fromJson(e));
   }
 
   Map<String, dynamic> toJson() {
@@ -206,10 +308,10 @@ class Categories {
   late final String? type;
 
   Categories.fromJson(Map<String, dynamic> json) {
-    id = json['id'];
-    name = json['name'];
-    slug = json['slug'];
-    totalAlbums = json['total_albums'];
+    id = _asInt(json['id']);
+    name = _asString(json['name']);
+    slug = _asString(json['slug']);
+    totalAlbums = _asInt(json['total_albums']);
     type = null;
   }
 
@@ -234,8 +336,8 @@ class Block {
   late final List<String> content;
 
   Block.fromJson(Map<String, dynamic> json) {
-    title = json['title'];
-    content = List.castFrom<dynamic, String>(json['content']);
+    title = _asString(json['title']);
+    content = _asStringList(json['content']);
   }
 
   Map<String, dynamic> toJson() {
@@ -284,23 +386,23 @@ class AlbumResponse {
   late final int? addtime;
 
   AlbumResponse.fromJson(Map<String, dynamic> json) {
-    id = json['id'];
-    name = json['name'];
-    author = List.castFrom<dynamic, String>(json['author']);
-    images = List.castFrom<dynamic, String>(json['images']);
-    description = json['description'];
-    totalViews = json['total_views'];
-    likes = json['likes'];
-    series = List.from(json['series']).map((e) => Series.fromJson(e)).toList();
-    seriesId = json['series_id'];
-    commentTotal = json['comment_total'];
-    tags = List.castFrom<dynamic, String>(json['tags']);
-    works = List.castFrom<dynamic, String>(json['works']);
-    relatedList = List.from(json['related_list'])
-        .map((e) => ComicBasic.fromJson(e))
-        .toList();
-    liked = json['liked'];
-    isFavorite = json['is_favorite'];
+    // [patch] 详情页整条容错: 任一字段缺失/类型漂移不再让详情页白屏,
+    // 这直接决定「收藏按钮所在页面能不能打开」
+    id = _asInt(json['id']);
+    name = _asString(json['name']);
+    author = _asStringList(json['author']);
+    images = _asStringList(json['images']);
+    description = _asString(json['description']);
+    totalViews = _asInt(json['total_views']);
+    likes = _asInt(json['likes']);
+    series = _mapList(json['series'], (e) => Series.fromJson(e));
+    seriesId = _asInt(json['series_id']);
+    commentTotal = _asInt(json['comment_total']);
+    tags = _asStringList(json['tags']);
+    works = _asStringList(json['works']);
+    relatedList = _mapList(json['related_list'], (e) => ComicBasic.fromJson(e));
+    liked = _asBool(json['liked']);
+    isFavorite = _asBool(json['is_favorite']);
     addtime = _parseIntTimestamp(json['addtime']);
   }
 
@@ -338,9 +440,10 @@ class Series {
   late final String sort;
 
   Series.fromJson(Map<String, dynamic> json) {
-    id = json['id'];
-    name = json['name'];
-    sort = json['sort'];
+    // [patch] 容错: 章节/系列元数据缺字段不再中断详情页解析
+    id = _asInt(json['id']);
+    name = _asString(json['name']);
+    sort = _asString(json['sort']);
   }
 
   Map<String, dynamic> toJson() {
@@ -376,12 +479,13 @@ class ComicBasic {
   late final ComicSimpleCategory? categorySub;
 
   ComicBasic.fromJson(Map<String, dynamic> json) {
-    id = json['id'];
-    author = json['author'] ?? "";
-    description = json['description'] ?? "";
-    name = json['name'] ?? "";
-    image = json['image'] ?? "";
-    updateAt = json['update_at'];
+    // [patch] id 类型漂移(字符串 id)时也能正常解析
+    id = _asInt(json['id']);
+    author = _asString(json['author']);
+    description = _asString(json['description']);
+    name = _asString(json['name']);
+    image = _asString(json['image']);
+    updateAt = _asIntOrNull(json['update_at']);
     addtime = _parseIntTimestamp(json['addtime']);
     category = json['category'] is Map<String, dynamic>
         ? ComicSimpleCategory.fromJson(json['category'])
@@ -428,14 +532,15 @@ class ChapterResponse {
   late final bool liked;
 
   ChapterResponse.fromJson(Map<String, dynamic> json) {
-    id = json['id'];
-    series = List.from(json['series']).map((e) => Series.fromJson(e)).toList();
-    tags = json['tags'];
-    name = json['name'];
-    images = List.castFrom<dynamic, String>(json['images']);
-    seriesId = json['series_id'];
-    isFavorite = json['is_favorite'];
-    liked = json['liked'];
+    // [patch] 阅读页同款容错, 字段漂移时不再整页白屏
+    id = _asInt(json['id']);
+    series = _mapList(json['series'], (e) => Series.fromJson(e));
+    tags = _asString(json['tags']);
+    name = _asString(json['name']);
+    images = _asStringList(json['images']);
+    seriesId = _asInt(json['series_id']);
+    isFavorite = _asBool(json['is_favorite']);
+    liked = _asBool(json['liked']);
   }
 
   Map<String, dynamic> toJson() {
@@ -462,8 +567,8 @@ class ImageSize {
   late final int w;
 
   ImageSize.fromJson(Map<String, dynamic> json) {
-    h = json['h'];
-    w = json['w'];
+    h = _asInt(json['h']);
+    w = _asInt(json['w']);
   }
 
   Map<String, dynamic> toJson() {
@@ -512,25 +617,26 @@ class Comment {
   late final List<Comment> replys;
 
   Comment.fromJson(Map<String, dynamic> json) {
-    AID = json['AID'];
-    CID = json['CID'];
-    UID = json['UID'];
-    username = json['username'];
-    nickname = json['nickname'];
-    likes = json['likes'];
-    gender = json['gender'];
-    updateAt = json['update_at'];
-    addtime = json['addtime'];
-    parentCID = json['parent_CID'];
-    expinfo = Expinfo.fromJson(json['expinfo']);
-    name = json['name'];
-    content = json['content'];
-    photo = json['photo'];
-    spoiler = json['spoiler'];
-    replys = List.from(json['replys'])
-        .map((e) => Comment.fromJson(e))
-        .cast<Comment>()
-        .toList();
+    // [patch] 容错: 评论字段缺失/类型漂移不再让整个评论区崩
+    AID = _asIntOrNull(json['AID']);
+    CID = _asInt(json['CID']);
+    UID = _asInt(json['UID']);
+    username = _asString(json['username']);
+    nickname = _asString(json['nickname']);
+    likes = _asInt(json['likes']);
+    gender = _asString(json['gender']);
+    updateAt = _asString(json['update_at']);
+    addtime = _asString(json['addtime']);
+    parentCID = _asInt(json['parent_CID']);
+    final exp = json['expinfo'];
+    expinfo = exp is Map<String, dynamic>
+        ? Expinfo.fromJson(exp)
+        : Expinfo.fromJson(const {});
+    name = _asString(json['name']);
+    content = _asString(json['content']);
+    photo = _asString(json['photo']);
+    spoiler = _asInt(json['spoiler']);
+    replys = _mapList(json['replys'], (e) => Comment.fromJson(e));
   }
 
   Map<String, dynamic> toJson() {
@@ -575,13 +681,14 @@ class Expinfo {
   late final List<Badge> badges;
 
   Expinfo.fromJson(Map<String, dynamic> json) {
-    levelName = json['level_name'];
-    level = json['level'];
-    nextLevelExp = json['nextLevelExp'];
-    exp = json['exp'];
-    expPercent = json['expPercent'];
-    uid = json['uid'];
-    badges = List.from(json['badges']).map((e) => Badge.fromJson(e)).toList();
+    // [patch] 容错: 等级信息缺失不再让评论区整页失败
+    levelName = _asString(json['level_name']);
+    level = _asInt(json['level']);
+    nextLevelExp = _asInt(json['nextLevelExp']);
+    exp = _asString(json['exp']);
+    expPercent = _asDouble(json['expPercent']);
+    uid = _asInt(json['uid']);
+    badges = _mapList(json['badges'], (e) => Badge.fromJson(e));
   }
 
   Map<String, dynamic> toJson() {
@@ -609,9 +716,9 @@ class Badge {
   late final String id;
 
   Badge.fromJson(Map<String, dynamic> json) {
-    content = json['content'];
-    name = json['name'];
-    id = json['id'];
+    content = _asString(json['content']);
+    name = _asString(json['name']);
+    id = _asString(json['id']);
   }
 
   Map<String, dynamic> toJson() {
@@ -625,8 +732,8 @@ class Badge {
 
 class CommentPage extends Page<Comment> {
   CommentPage.fromJson(Map<String, dynamic> json) {
-    list = List.from(json['list']).map((e) => Comment.fromJson(e)).toList();
-    total = json['total'];
+    list = _mapList(json['list'], (e) => Comment.fromJson(e));
+    total = _asInt(json['total']);
   }
 }
 
@@ -644,14 +751,20 @@ class PreLoginResponse {
   late final String? message;
 
   PreLoginResponse.fromJson(Map<String, dynamic> json) {
-    preSet = json['pre_set'];
-    preLogin = json['pre_login'];
-    if (json['self_info'] != null) {
-      selfInfo = SelfInfo.fromJson(json['self_info']);
+    // [patch] 容错: 登录状态探测缺字段时按未登录处理, 不再让启动流程直接崩
+    preSet = _asBool(json['pre_set']);
+    preLogin = _asBool(json['pre_login']);
+    final raw = json['self_info'];
+    if (raw is Map<String, dynamic>) {
+      try {
+        selfInfo = SelfInfo.fromJson(raw);
+      } catch (_) {
+        selfInfo = null;
+      }
     } else {
       selfInfo = null;
     }
-    message = json['message'];
+    message = json['message'] == null ? null : _asString(json['message']);
   }
 
   Map<String, dynamic> toJson() {
@@ -706,24 +819,26 @@ class SelfInfo {
   late final int albumFavoritesMax;
 
   SelfInfo.fromJson(Map<String, dynamic> json) {
-    uid = json['uid'];
-    username = json['username'];
-    email = json['email'];
-    emailverified = json['emailverified'];
-    photo = json['photo'];
-    fname = json['fname'];
-    gender = json['gender'];
-    message = json['message'];
-    coin = json['coin'];
-    albumFavorites = json['album_favorites'];
-    s = json['s'];
-    levelName = json['level_name'];
-    level = json['level'];
-    nextLevelExp = json['nextLevelExp'];
-    exp = json['exp'];
-    expPercent = json['expPercent'];
-    badges = List.castFrom<dynamic, dynamic>(json['badges']);
-    albumFavoritesMax = json['album_favorites_max'];
+    // [patch] 容错: 账号信息字段漂移(如 badges 缺失)时不再整条抛,
+    // 否则「已登录」状态会被误判成掉登录
+    uid = _asInt(json['uid']);
+    username = _asString(json['username']);
+    email = _asString(json['email']);
+    emailverified = _asString(json['emailverified']);
+    photo = _asString(json['photo']);
+    fname = _asString(json['fname']);
+    gender = _asString(json['gender']);
+    message = _asString(json['message']);
+    coin = _asInt(json['coin']);
+    albumFavorites = _asInt(json['album_favorites']);
+    s = _asString(json['s']);
+    levelName = _asString(json['level_name']);
+    level = _asInt(json['level']);
+    nextLevelExp = _asInt(json['nextLevelExp']);
+    exp = _asString(json['exp']);
+    expPercent = _asDouble(json['expPercent']);
+    badges = _asList(json['badges']);
+    albumFavoritesMax = _asInt(json['album_favorites_max']);
   }
 
   Map<String, dynamic> toJson() {
@@ -762,9 +877,10 @@ class FavoriteFolder {
   late final String name;
 
   FavoriteFolder.fromJson(Map<String, dynamic> json) {
-    fid = json['FID'];
-    uid = json['UID'];
-    name = json['name'];
+    // [patch] 容错解析
+    fid = _asString(json['FID']);
+    uid = _asString(json['UID']);
+    name = _asString(json['name']);
   }
 
   Map<String, dynamic> toJson() {
@@ -779,10 +895,10 @@ class FavoriteFolder {
 class Favorite extends CountPage<ComicSimple> {
   late final List<FavoriteFolderItem> folderList;
   Favorite.fromJson(Map<String, dynamic> json) : super.fromJson(json) {
-    list = List.from(json['list']).map((e) => ComicSimple.fromJson(e)).toList();
-    folderList = List.from(json['folder_list'])
-        .map((e) => FavoriteFolderItem.fromJson(e))
-        .toList();
+    // [patch] list / folder_list 任一缺失都不再整页失败: 缺一个就退化成空列表
+    list = _mapList(json['list'], (e) => ComicSimple.fromJson(e));
+    folderList =
+        _mapList(json['folder_list'], (e) => FavoriteFolderItem.fromJson(e));
   }
 
   @override
@@ -811,9 +927,11 @@ class FavoriteFolderItem {
   late final String name;
 
   FavoriteFolderItem.fromJson(Map<String, dynamic> json) {
-    fid = json['FID'];
-    uid = json['UID'];
-    name = json['name'];
+    // [patch] 接口时序不一致: /favorite 返回 FID 为字符串, /favorites 里为数字,
+    // 原实现按 int 硬赋值, 拿到字符串就整页崩 -> 这里统一按数字解析
+    fid = _asInt(json['FID']);
+    uid = _asInt(json['UID']);
+    name = _asString(json['name']);
   }
 
   Map<String, dynamic> toJson() {
@@ -827,7 +945,8 @@ class FavoriteFolderItem {
 
 class FavoritesResponse extends CountPage<ComicSimple> {
   FavoritesResponse.fromJson(Map<String, dynamic> json) : super.fromJson(json) {
-    list = List.from(json['list']).map((e) => ComicSimple.fromJson(e)).toList();
+    // [patch] 容错解析
+    list = _mapList(json['list'], (e) => ComicSimple.fromJson(e));
   }
 
   @override
@@ -839,9 +958,10 @@ class FavoritesResponse extends CountPage<ComicSimple> {
 }
 
 class WeekFilterResponse extends Page<ComicSimple> {
-    WeekFilterResponse.fromJson(Map<String, dynamic> json) {
-      list = List.from(json['list']).map((e) => ComicSimple.fromJson(e)).toList();
-      total = json['total'];
+  WeekFilterResponse.fromJson(Map<String, dynamic> json) {
+    // [patch] 容错解析
+    list = _mapList(json['list'], (e) => ComicSimple.fromJson(e));
+    total = _asInt(json['total']);
   }
 }
 
@@ -857,9 +977,10 @@ class ActionResponse {
   late final String type;
 
   ActionResponse.fromJson(Map<String, dynamic> json) {
-    status = json['status'];
-    msg = json['msg'];
-    type = json['type'];
+    // [patch] 容错: set_favorite 返回缺字段时不再整条抛, 只当作空状态
+    status = _asString(json['status']);
+    msg = _asString(json['msg']);
+    type = _asString(json['type']);
   }
 
   Map<String, dynamic> toJson() {
@@ -899,11 +1020,12 @@ class CommentResponse {
   late final String spoiler;
 
   CommentResponse.fromJson(Map<String, dynamic> json) {
-    msg = json['msg'];
-    status = json['status'];
-    aid = json['aid'];
-    cid = json['cid'];
-    spoiler = json['spoiler'];
+    // [patch] 容错: 发表评论返回缺字段时不再抛, 只退化成本地状态
+    msg = _asString(json['msg']);
+    status = _asString(json['status']);
+    aid = _asInt(json['aid']);
+    cid = _asInt(json['cid']);
+    spoiler = _asString(json['spoiler']);
   }
 
   Map<String, dynamic> toJson() {
@@ -937,13 +1059,13 @@ class ViewLog {
   late final int lastViewPage;
 
   ViewLog.fromJson(Map<String, dynamic> json) {
-    id = json['id'];
-    author = json['author'];
-    description = json['description'];
-    name = json['name'];
-    lastViewTime = json['last_view_time'];
-    lastViewChapterId = json['last_view_chapter_id'];
-    lastViewPage = json['last_view_page'];
+    id = _asInt(json['id']);
+    author = _asString(json['author']);
+    description = _asString(json['description']);
+    name = _asString(json['name']);
+    lastViewTime = _asInt(json['last_view_time']);
+    lastViewChapterId = _asInt(json['last_view_chapter_id']);
+    lastViewPage = _asInt(json['last_view_page']);
   }
 
   Map<String, dynamic> toJson() {
@@ -973,13 +1095,11 @@ class GamePage {
   late final List<Game> hotGames;
 
   GamePage.fromJson(Map<String, dynamic> json) {
-    games = List.from(json['games']).map((e) => Game.fromJson(e)).toList();
-    gamesTotal = json['games_total'];
-    categories = List.from(json['categories'])
-        .map((e) => GameCategory.fromJson(e))
-        .toList();
-    hotGames =
-        List.from(json['hot_games']).map((e) => Game.fromJson(e)).toList();
+    // [patch] 容错: 游戏页字段缺失不再整页失败
+    games = _mapList(json['games'], (e) => Game.fromJson(e));
+    gamesTotal = _asString(json['games_total']);
+    categories = _mapList(json['categories'], (e) => GameCategory.fromJson(e));
+    hotGames = _mapList(json['hot_games'], (e) => Game.fromJson(e));
   }
 
   Map<String, dynamic> toJson() {
@@ -1026,20 +1146,23 @@ class Game {
   late final List<String> showLang;
 
   Game.fromJson(Map<String, dynamic> json) {
-    gid = json['gid'];
-    title = json['title'];
-    description = json['description'];
-    tags = json['tags'];
-    link = json['link'];
-    linkTitle = json['link_title'];
-    photo = json['photo'];
-    type = List.castFrom<dynamic, String>(json['type']);
-    categories = GameCategory.fromJson(json['categories']);
-    updateAt = json['update_at'];
-    totalClicks = json['total_clicks'];
-    orderRank = json['order_rank'];
-    status = json['status'];
-    showLang = List.castFrom<dynamic, String>(json['show_lang']);
+    gid = _asInt(json['gid']);
+    title = _asString(json['title']);
+    description = _asString(json['description']);
+    tags = _asString(json['tags']);
+    link = _asString(json['link']);
+    linkTitle = _asString(json['link_title']);
+    photo = _asString(json['photo']);
+    type = _asStringList(json['type']);
+    final category = json['categories'];
+    categories = category is Map<String, dynamic>
+        ? GameCategory.fromJson(category)
+        : GameCategory.fromJson(const {});
+    updateAt = _asInt(json['update_at']);
+    totalClicks = _asInt(json['total_clicks']);
+    orderRank = _asInt(json['order_rank']);
+    status = _asInt(json['status']);
+    showLang = _asStringList(json['show_lang']);
   }
 
   Map<String, dynamic> toJson() {
@@ -1094,8 +1217,9 @@ class SearchHistory {
   late final int lastSearchTime;
 
   SearchHistory.fromJson(Map<String, dynamic> json) {
-    searchQuery = json['search_query'];
-    lastSearchTime = json['last_search_time'];
+    // [patch] 容错: 历史记录缺字段时退化为空关键词, 不再让搜索面板崩
+    searchQuery = _asString(json['search_query']);
+    lastSearchTime = _asInt(json['last_search_time']);
   }
 
   Map<String, dynamic> toJson() {
@@ -1116,10 +1240,12 @@ class DownloadCreate {
   late final List<DownloadCreateChapter> chapters;
 
   DownloadCreate.fromJson(Map<String, dynamic> json) {
-    album = DownloadCreateAlbum.fromJson(json['album']);
-    chapters = List.from(json['chapters'])
-        .map((e) => DownloadCreateChapter.fromJson(e))
-        .toList();
+    final rawAlbum = json['album'];
+    album = rawAlbum is Map<String, dynamic>
+        ? DownloadCreateAlbum.fromJson(rawAlbum)
+        : DownloadCreateAlbum.fromJson(const {});
+    chapters =
+        _mapList(json['chapters'], (e) => DownloadCreateChapter.fromJson(e));
   }
 
   Map<String, dynamic> toJson() {
@@ -1148,12 +1274,12 @@ class DownloadCreateAlbum {
   late final String description;
 
   DownloadCreateAlbum.fromJson(Map<String, dynamic> json) {
-    id = json['id'];
-    name = json['name'];
-    author = List.castFrom<dynamic, String>(json['author']);
-    tags = List.castFrom<dynamic, String>(json['tags']);
-    works = List.castFrom<dynamic, String>(json['works']);
-    description = json['description'];
+    id = _asInt(json['id']);
+    name = _asString(json['name']);
+    author = _asStringList(json['author']);
+    tags = _asStringList(json['tags']);
+    works = _asStringList(json['works']);
+    description = _asString(json['description']);
   }
 
   Map<String, dynamic> toJson() {
@@ -1180,9 +1306,9 @@ class DownloadCreateChapter {
   late final String sort;
 
   DownloadCreateChapter.fromJson(Map<String, dynamic> json) {
-    id = json['id'];
-    name = json['name'];
-    sort = json['sort'];
+    id = _asInt(json['id']);
+    name = _asString(json['name']);
+    sort = _asString(json['sort']);
   }
 
   Map<String, dynamic> toJson() {
@@ -1222,17 +1348,17 @@ class DownloadAlbum {
   late final int dledImageCount;
 
   DownloadAlbum.fromJson(Map<String, dynamic> json) {
-    id = json['id'];
-    name = json['name'];
-    author = json['author'];
-    tags = json['tags'];
-    works = json['works'];
-    description = json['description'];
-    dlSquareCoverStatus = json['dl_square_cover_status'];
-    dl_3x4CoverStatus = json['dl_3x4_cover_status'];
-    dlStatus = json['dl_status'];
-    imageCount = json['image_count'];
-    dledImageCount = json['dled_image_count'];
+    id = _asInt(json['id']);
+    name = _asString(json['name']);
+    author = _asString(json['author']);
+    tags = _asString(json['tags']);
+    works = _asString(json['works']);
+    description = _asString(json['description']);
+    dlSquareCoverStatus = _asInt(json['dl_square_cover_status']);
+    dl_3x4CoverStatus = _asInt(json['dl_3x4_cover_status']);
+    dlStatus = _asInt(json['dl_status']);
+    imageCount = _asInt(json['image_count']);
+    dledImageCount = _asInt(json['dled_image_count']);
   }
 
   Map<String, dynamic> toJson() {
@@ -1274,14 +1400,14 @@ class DlImage {
   late final int height;
 
   DlImage.fromJson(Map<String, dynamic> json) {
-    albumId = json['album_id'];
-    chapterId = json['chapter_id'];
-    imageIndex = json['image_index'];
-    name = json['name'];
-    key = json['key'];
-    dlStatus = json['dl_status'];
-    width = json['width'];
-    height = json['height'];
+    albumId = _asInt(json['album_id']);
+    chapterId = _asInt(json['chapter_id']);
+    imageIndex = _asInt(json['image_index']);
+    name = _asString(json['name']);
+    key = _asString(json['key']);
+    dlStatus = _asInt(json['dl_status']);
+    width = _asInt(json['width']);
+    height = _asInt(json['height']);
   }
 
   Map<String, dynamic> toJson() {
@@ -1304,7 +1430,7 @@ ComicBasic albumToSimple(AlbumResponse album, ComicBasic? bk) {
     description: album.description,
     name: album.name,
     author: album.author.join(" / "),
-    image: album.images.isEmpty ? '' : album.images[0] ?? '',
+    image: album.images.isEmpty ? '' : album.images[0],
     addtime: album.addtime,
     updateAt: bk?.updateAt
   );
@@ -1315,8 +1441,10 @@ class IsPro {
   late int expire;
 
   IsPro.fromJson(Map<String, dynamic> json) {
-    isPro = json["is_pro"];
-    this.expire = json["expire"];
+    // [patch] 容错: is_pro 缺字段时不要抛, 否则 Pro 判定失败会连带
+    // 收藏/搜索被当成非 Pro 限制(页码受限、功能灰)
+    isPro = _asBool(json["is_pro"]);
+    expire = _asInt(json["expire"]);
   }
 }
 
@@ -1325,8 +1453,10 @@ class ProInfoAll {
   late ProInfoPat proInfoPat;
 
   ProInfoAll.fromJson(Map<String, dynamic> json) {
-    proInfoAf = ProInfoAf.fromJson(json["pro_info_af"]);
-    proInfoPat = ProInfoPat.fromJson(json["pro_info_pat"]);
+    proInfoAf = ProInfoAf.fromJson(
+        json["pro_info_af"] is Map<String, dynamic> ? json["pro_info_af"] : {});
+    proInfoPat = ProInfoPat.fromJson(
+        json["pro_info_pat"] is Map<String, dynamic> ? json["pro_info_pat"] : {});
   }
 }
 
@@ -1335,8 +1465,8 @@ class ProInfoAf {
   late int expire;
 
   ProInfoAf.fromJson(Map<String, dynamic> json) {
-    isPro = json["is_pro"];
-    expire = json["expire"];
+    isPro = _asBool(json["is_pro"]);
+    expire = _asInt(json["expire"]);
   }
 }
 
@@ -1351,14 +1481,14 @@ class ProInfoPat {
   late String accessKey;
 
   ProInfoPat.fromJson(Map<String, dynamic> json) {
-    isPro = json["is_pro"];
-    patId = json["pat_id"] ?? "";
-    bindUid = json["bind_uid"] ?? "";
-    requestDelete = json["request_delete"] ?? 0;
-    reBind = json["re_bind"] ?? 0;
-    errorType = json["error_type"] ?? 0;
-    errorMsg = json["error_msg"] ?? "";
-    accessKey = json["access_key"] ?? "";
+    isPro = _asBool(json["is_pro"]);
+    patId = _asString(json["pat_id"]);
+    bindUid = _asString(json["bind_uid"]);
+    requestDelete = _asInt(json["request_delete"]);
+    reBind = _asInt(json["re_bind"]);
+    errorType = _asInt(json["error_type"]);
+    errorMsg = _asString(json["error_msg"]);
+    accessKey = _asString(json["access_key"]);
   }
 }
 
@@ -1367,8 +1497,9 @@ class WeekData {
   late List<WeekType> types;
 
   WeekData.fromJson(Map<String, dynamic> json) {
-    categories = List.from(json['categories']).map((e) => WeekCategory.fromJson(e)).toList();
-    types = List.from(json['type']).map((e) => WeekType.fromJson(e)).toList();
+    // [patch] 容错: 周表接口字段缺失时退化成空列表
+    categories = _mapList(json['categories'], (e) => WeekCategory.fromJson(e));
+    types = _mapList(json['type'], (e) => WeekType.fromJson(e));
   }
 }
 
@@ -1378,9 +1509,9 @@ class WeekCategory {
   late String title;
 
   WeekCategory.fromJson(Map<String, dynamic> json) {
-    id = json['id'];
-    time = json['time'];
-    title = json['title'];
+    id = _asString(json['id']);
+    time = _asString(json['time']);
+    title = _asString(json['title']);
   }
 }
 
@@ -1389,7 +1520,7 @@ class WeekType {
   late String title;
 
   WeekType.fromJson(Map<String, dynamic> json) {
-    id = json['id'];
-    title = json['title'];
+    id = _asString(json['id']);
+    title = _asString(json['title']);
   }
 }

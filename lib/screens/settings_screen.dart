@@ -15,8 +15,7 @@ import 'package:jasmine/configs/reader_preload_count.dart';
 import 'package:jasmine/configs/blocked_tags.dart';
 import 'package:jasmine/configs/drag_region_lock.dart';
 import 'package:jasmine/configs/gesture_speed.dart';
-import 'package:jasmine/configs/network_api_host.dart';
-import 'package:jasmine/configs/network_cdn_host.dart';
+import 'package:jasmine/configs/network_shunts.dart';
 import 'package:jasmine/configs/reader_zoom_scale.dart';
 import 'package:jasmine/screens/downloads_exports_screen2.dart';
 
@@ -29,7 +28,6 @@ import '../configs/comic_seal.dart';
 import '../configs/display_jmcode.dart';
 import '../configs/download_and_export_to.dart';
 import '../configs/esc_to_pop.dart';
-import '../configs/disable_recommend_content.dart';
 import '../configs/export_rename.dart';
 import '../configs/ignore_upgrade_pop.dart';
 import '../configs/ignore_view_log.dart';
@@ -260,6 +258,8 @@ class _SettingsState extends State<SettingsScreen> {
                 autoBestHostSetting(),
                 apiHostSetting(),
                 cdnHostSetting(),
+                // [patch] 对齐上游: 一键从服务端刷新 API / 图片分流
+                updateShuntsSetting(),
                 proxySetting(),
                 const Divider(),
                 createFavoriteFolderItemTile(context),
@@ -327,7 +327,7 @@ class _SettingsState extends State<SettingsScreen> {
                 _startupImageSettingTile(context),
                 if (_startupImageExists) _deleteStartupImageTile(context),
                 const Divider(),
-                disableRecommendContentSetting(),
+                // [patch] 推荐内容已整块移除, 相关开关一并去掉
                 if (isPro) ...[
                   const Divider(),
                   ignoreUpgradePopSetting(),
@@ -364,21 +364,7 @@ class _SettingsState extends State<SettingsScreen> {
                 ),
                 const Divider(),
                 searchTitleWordsSetting(),
-                // [patch] 上游项目: 默认收起, 展开后跳转 jenny 仓库
-                ExpansionTile(
-                  title: const Text("上游项目"),
-                  children: [
-                    const Divider(),
-                    ListTile(
-                      title: const Text("Jenny"),
-                      subtitle: const Text("github.com/niuhuan/jenny"),
-                      onTap: () async {
-                        await openUrl("https://github.com/niuhuan/jenny");
-                      },
-                    ),
-                    const Divider(),
-                  ],
-                ),
+                // [patch] 移除「上游项目 / Jenny」外链推广
                 ...fontSizeAdjustSettings(),
                 const Divider(),
               ],

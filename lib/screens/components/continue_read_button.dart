@@ -3,6 +3,22 @@ import 'package:jasmine/basic/entities.dart';
 import 'package:jasmine/basic/methods.dart';
 import 'package:jasmine/screens/components/my_flat_button.dart';
 
+// [patch] 章节排序容错: sort 为空串/非数字时不再 int.parse 崩溃
+int _compareSeriesSort(Series a, Series b) {
+  final ai = int.tryParse(a.sort.trim());
+  final bi = int.tryParse(b.sort.trim());
+  if (ai != null && bi != null) {
+    return ai.compareTo(bi);
+  }
+  if (ai != null) {
+    return -1;
+  }
+  if (bi != null) {
+    return 1;
+  }
+  return a.sort.compareTo(b.sort);
+}
+
 // 继续阅读按钮
 class ContinueReadButton extends StatefulWidget {
   final Future<ViewLog?> viewFuture;
@@ -41,9 +57,8 @@ class _ContinueReadButtonState extends State<ContinueReadButton> {
               if (widget.album.series.isEmpty) {
                 widget.onChoose(widget.album.id, 0);
               } else {
-                widget.album.series.sort(
-                  (a, b) => int.parse(a.sort).compareTo(int.parse(b.sort)),
-                );
+                // [patch] 用容错排序, 避免 sort 异常导致按钮点击崩溃
+                widget.album.series.sort(_compareSeriesSort);
                 widget.onChoose(widget.album.series[0].id, 0);
               }
             };

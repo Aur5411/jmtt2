@@ -3,7 +3,6 @@ import 'package:jasmine/basic/commons.dart';
 import 'package:jasmine/configs/login.dart';
 import 'package:jasmine/screens/comments_screen.dart';
 import 'package:jasmine/screens/components/avatar.dart';
-import 'package:jasmine/screens/components/recommend_links_panel.dart';
 import 'package:jasmine/screens/settings_screen.dart';
 import 'package:jasmine/screens/view_log_screen.dart';
 
@@ -65,9 +64,7 @@ class _UserScreenState extends State<UserScreen>
             const Divider(),
             _buildComments(),
             const Divider(),
-            const RecommendLinksPanel(
-              padding: EdgeInsets.fromLTRB(16, 0, 16, 0),
-            ),
+            // [patch] 移除书架页底部服务端下发的客户端推广 (pika / hanime 等)
             Container(height: 30),
           ],
         ),

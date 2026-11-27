@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import '../basic/commons.dart';
 import '../configs/versions.dart';
@@ -9,7 +7,6 @@ import '../configs/login.dart';
 import '../configs/network_api_host.dart';
 import '../configs/network_cdn_host.dart';
 import 'app_screen.dart';
-import 'components/recommend_links_panel.dart';
 
 const firstLoginScreen = FirstLoginScreen();
 
@@ -24,7 +21,6 @@ class _FirstLoginScreenState extends State<FirstLoginScreen> {
   bool _logging = false;
   String _username = "";
   String _password = "";
-  int _onClickVersion = 0;
 
   Widget _usernameField() {
     return ListTile(
@@ -98,18 +94,8 @@ class _FirstLoginScreenState extends State<FirstLoginScreen> {
         actions: _logging
             ? []
             : [
-                IconButton(
-                  onPressed: () {
-                    setState(() {
-                      _onClickVersion++;
-                    });
-                    if (_onClickVersion >= 7) {
-                      openUrl(String.fromCharCodes(base64Decode(
-                          "aHR0cHM6Ly9qbWNvbWljMS5yb2Nrcy9zaWdudXA=")));
-                    }
-                  },
-                  icon: Text(currentVersion()),
-                ),
+                // [patch] 移除登录页版本号连点跳转注册页的推广彩蛋, 只保留版本号展示
+                Center(child: Text(currentVersion())),
                 _saveButton,
               ],
       ),
@@ -134,7 +120,6 @@ class _FirstLoginScreenState extends State<FirstLoginScreen> {
             padding: EdgeInsets.zero,
           ),
         ),
-        const RecommendLinksPanel(),
       ],
     );
   }

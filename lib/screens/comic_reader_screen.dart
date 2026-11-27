@@ -10,6 +10,7 @@ import 'package:flutter/services.dart';
 import 'package:jasmine/basic/commons.dart';
 import 'package:jasmine/basic/log.dart';
 import 'package:jasmine/basic/methods.dart';
+import 'package:jasmine/configs/network_shunts.dart' as shunts;
 import 'package:jasmine/configs/reader_controller_type.dart';
 import 'package:jasmine/configs/drag_region_lock.dart';
 import 'package:jasmine/configs/gesture_speed.dart';
@@ -55,16 +56,82 @@ class ComicReaderScreen extends StatefulWidget {
   State<StatefulWidget> createState() => _ComicReaderScreenState();
 }
 
+// [patch] 章节排序容错: 服务端返回的 sort 可能是空串/非数字,
+// 原来直接 int.parse 会抛 FormatException, 让阅读页整页崩成空白
+int _compareSeriesSort(Series a, Series b) {
+  final ai = int.tryParse(a.sort.trim());
+  final bi = int.tryParse(b.sort.trim());
+  if (ai != null && bi != null) {
+    return ai.compareTo(bi);
+  }
+  if (ai != null) {
+    return -1;
+  }
+  if (bi != null) {
+    return 1;
+  }
+  return a.sort.compareTo(b.sort);
+}
+
 class _ComicReaderScreenState extends State<ComicReaderScreen> {
   late ReaderType _readerType;
   late ReaderDirection _readerDirection;
   late Future<ChapterResponse> _chapterFuture;
+
+  // [patch] 章节图片为空时自动换源的去重标记
+  bool _failoverTried = false;
+  bool _failoverScheduled = false;
 
   void _load() {
     setState(() {
       _readerType = currentReaderType;
       _readerDirection = currentReaderDirection;
       _chapterFuture = widget.loadChapter(widget.chapterId);
+    });
+  }
+
+  /// [patch] 服务端某些 API 域名 (实测 www.cdnbtd.cc) 的 /chapter 接口会返回
+  /// 合法响应但 images 为空数组, 表现为「章节点进去没有内容」。
+  /// 这种域名 ping 延迟是正常的, 测速选源发现不了, 所以在阅读页兜一层:
+  /// 发现 images 为空就自动切到其它候选域名重取一次, 而不是让用户手动重试。
+  void _scheduleFailover() {
+    if (_failoverScheduled) {
+      return;
+    }
+    _failoverScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        final hosts = await shunts.otherApiHostCandidates();
+        if (hosts.isEmpty) {
+          if (mounted) {
+            setState(() {
+              _failoverTried = true;
+              _failoverScheduled = false;
+            });
+          }
+          return;
+        }
+        final target = hosts.first;
+        debugPrient("章节图片为空, 自动切换 API 域名: $target");
+        await methods.saveApiHost(target);
+        await shunts.reloadApiHosts();
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _failoverTried = true;
+          _failoverScheduled = false;
+          _chapterFuture = methods.chapter(widget.chapterId);
+        });
+      } catch (e) {
+        debugPrient("章节图片为空时自动换源失败: $e");
+        if (mounted) {
+          setState(() {
+            _failoverTried = true;
+            _failoverScheduled = false;
+          });
+        }
+      }
     });
   }
 
@@ -115,12 +182,69 @@ class _ComicReaderScreenState extends State<ComicReaderScreen> {
           );
         }
         final chapter = snapshot.requireData;
+        // [patch] 章节没有图片时给出可重试的提示, 不再是一片黑屏。
+        // 另外先自动换个 API 域名重取一次, 因为某些域名 (实测 www.cdnbtd.cc)
+        // 会返回合法响应但 images 为空, 换域名通常就好了。
+        if (chapter.images.isEmpty) {
+          if (!_failoverTried) {
+            _scheduleFailover();
+            return Scaffold(
+              appBar: AppBar(),
+              body: const ContentLoading(label: "本章节没有图片, 正在切换线路重试"),
+            );
+          }
+          return Scaffold(
+            appBar: AppBar(),
+            body: Column(
+              children: [
+                Expanded(
+                  child: ContentError(
+                    onRefresh: () async {
+                      setState(() {
+                        _failoverTried = false;
+                        _failoverScheduled = false;
+                        _chapterFuture = methods.chapter(widget.chapterId);
+                      });
+                    },
+                    error: StateError(
+                        "本章节没有图片内容(第${widget.chapterId}章), 已尝试切换线路, 请点击刷新或手动换源"),
+                    stackTrace: null,
+                  ),
+                ),
+                // [patch] 兜底失败时给一个直接换 API 线路的入口
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 24),
+                  child: TextButton(
+                    onPressed: () async {
+                      await shunts.chooseApiHost(context);
+                      if (!mounted) {
+                        return;
+                      }
+                      setState(() {
+                        _failoverTried = false;
+                        _failoverScheduled = false;
+                        _chapterFuture = methods.chapter(widget.chapterId);
+                      });
+                    },
+                    child: const Text("手动切换线路"),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+        // [patch] 续读页码可能超出本章图片数, 夹紧后再交给阅读器,
+        // 否则 PageController/initialScrollIndex 越界会渲染成空白页
+        final startIndex =
+            widget.initRank < 0 ? 0 : (widget.initRank >= chapter.images.length
+                ? chapter.images.length - 1
+                : widget.initRank);
         final screen = Scaffold(
           backgroundColor: Colors.black,
           body: _ComicReader(
             comicId: widget.comic.id,
             chapter: chapter,
-            startIndex: widget.initRank,
+            startIndex: startIndex,
             reload: (int index, bool fullScreen) async {
               Navigator.of(context).pushReplacement(
                 MaterialPageRoute(builder: (BuildContext context) {
@@ -284,9 +408,8 @@ abstract class _ComicReaderState extends State<_ComicReader> {
       return;
     }
     final entries = [...widget.chapter.series];
-    entries.sort(
-      (a, b) => int.parse(a.sort).compareTo(int.parse(b.sort)),
-    );
+    // [patch] 排序容错, 避免 sort 为空/非数字时整页崩溃
+    entries.sort(_compareSeriesSort);
     _sortedSeriesIds = entries.map((e) => e.id).toList(growable: false);
     final index = _sortedSeriesIds.indexOf(widget.chapter.id);
     if (index >= 0 && index < _sortedSeriesIds.length - 1) {
@@ -964,9 +1087,8 @@ class _EpChooserState extends State<_EpChooser> {
     }
 
     var entries = [...widget.chapter.series];
-    entries.sort(
-      (a, b) => int.parse(a.sort).compareTo(int.parse(b.sort)),
-    );
+    // [patch] 排序容错, 避免 sort 为空/非数字时章节选择器崩溃
+    entries.sort(_compareSeriesSort);
     var widgets = [
       Container(height: 20),
       ...entries.map((e) {

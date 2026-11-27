@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:jasmine/configs/network_api_host.dart';
-import 'package:jasmine/configs/network_cdn_host.dart';
+// [patch] 分流实现已合并到 network_shunts.dart
+import 'package:jasmine/configs/network_shunts.dart';
 import 'package:jasmine/configs/proxy.dart';
 import 'package:jasmine/screens/init_screen.dart';
 
@@ -46,6 +46,8 @@ class NetworkSettingScreen extends StatelessWidget {
         children: [
           apiHostSetting(),
           cdnHostSetting(),
+          // [patch] 对齐上游: 支持从服务端一键刷新 API / 图片分流
+          updateShuntsSetting(),
           proxySetting(),
         ],
       ),

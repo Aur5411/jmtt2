@@ -38,10 +38,14 @@ class _ComicCommentsListState extends State<ComicCommentsList>
     final response =
         await methods.forum(widget.mode, widget.aid, widget.uid, _page);
     if (_page == 1) {
-      if (response.total == 0) {
+      // [patch] 同 ComicPager: 空页做分母会得到 Infinity, 页数判断整体失效
+      final pageSize = response.list.length;
+      if (response.total <= 0) {
         _maxPage = 1;
+      } else if (pageSize > 0) {
+        _maxPage = (response.total / pageSize).ceil();
       } else {
-        _maxPage = (response.total / response.list.length).ceil();
+        _maxPage = 1;
       }
     }
     return response;

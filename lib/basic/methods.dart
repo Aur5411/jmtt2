@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -15,41 +16,269 @@ const methods = Methods._();
 // (Methods 是 const 单例, 可变缓存只能放文件级)
 final Map<String, String> _coverPathCache = {};
 
+// [patch] 分流候选 (对齐上游 ComicSparks/jasmine):
+// official 是官方下发的候选域名, custom 是用户手动添加的
+class HostOptions {
+  final List<String> official;
+  final List<String> custom;
+
+  const HostOptions({
+    required this.official,
+    required this.custom,
+  });
+
+  factory HostOptions.fromJson(Map<String, dynamic> json) {
+    return HostOptions(
+      official: _hostStrings(json["official"]),
+      custom: _hostStrings(json["custom"]),
+    );
+  }
+
+  List<String> get visible {
+    final seen = <String>{};
+    final hosts = <String>[];
+    for (final host in [...official, ...custom]) {
+      if (seen.add(host)) {
+        hosts.add(host);
+      }
+    }
+    return hosts;
+  }
+
+  bool isCustom(String host) => custom.contains(host);
+}
+
+List<String> _hostStrings(dynamic value) {
+  if (value is! List) {
+    return const [];
+  }
+  final hosts = <String>[];
+  for (final item in value) {
+    // [patch] 逐项跳过 null/空串: 直接 "$item" 会把 null 变成字符串 "null",
+    // 拼出的 https://null 会在测速时白白多一次失败请求
+    if (item == null) {
+      continue;
+    }
+    final host = "$item".trim();
+    if (host.isNotEmpty) {
+      hosts.add(host);
+    }
+  }
+  return hosts;
+}
+
+// [patch] 「更新分流」的结果: 分别报告 API 与图片域名是否刷新成功
+class UpdateShuntsResult {
+  final bool apiOk;
+  final bool cdnOk;
+  final String apiError;
+  final String cdnError;
+  final String apiHost;
+  final String cdnHost;
+
+  const UpdateShuntsResult({
+    required this.apiOk,
+    required this.cdnOk,
+    required this.apiError,
+    required this.cdnError,
+    required this.apiHost,
+    required this.cdnHost,
+  });
+
+  factory UpdateShuntsResult.fromJson(Map<String, dynamic> json) {
+    return UpdateShuntsResult(
+      apiOk: json["api_ok"] == true,
+      cdnOk: json["cdn_ok"] == true,
+      apiError: "${json["api_error"] ?? ""}",
+      cdnError: "${json["cdn_error"] ?? ""}",
+      apiHost: "${json["api_host"] ?? ""}",
+      cdnHost: "${json["cdn_host"] ?? ""}",
+    );
+  }
+
+  String get message {
+    final api = apiOk ? "API 分流已更新" : "API 分流更新失败：$apiError";
+    final cdn = cdnOk ? "图片分流已更新" : "图片分流更新失败：$cdnError";
+    return "$api, $cdn";
+  }
+}
+
 class Methods {
   const Methods._();
 
   static const _channel = MethodChannel("methods");
   static HttpClient httpClient = HttpClient();
 
+  /// [patch] 单次通道调用超时: 后端卡住/主线程繁忙时不再无限期挂起
+  static const Duration _invokeTimeout = Duration(seconds: 20);
+
+  /// [patch] 只读请求失败自动重试次数(不含首次)
+  static const int _invokeRetryTimes = 2;
+
+  /// [patch] 可安全重试的只读方法: 收藏/取消收藏/建删文件夹等写操作不重试,
+  /// 避免网络抖动时重复提交产生脏数据
+  static const Set<String> _retryableMethods = {
+    "init_dart",
+    "init_dart2",
+    "config_links",
+    "app_config",
+    "load_property",
+    "comics",
+    "comic_search",
+    "page_view_log",
+    "album",
+    "chapter",
+    "categories",
+    "favorites",
+    "favorite",
+    "forum",
+    "games",
+    "last_search_histories",
+    "all_downloads",
+    "pre_login",
+    "load_api_host",
+    "load_cdn_host",
+    // [patch] 分流候选/刷新都是幂等操作, 允许重试
+    "load_api_host_options",
+    "load_cdn_host_options",
+    "update_shunts",
+  };
+
+  /// [patch] 这些方法的返回值必须是 JSON 对象/数组; 后端偶发返回空串时
+  /// 原来会在调用方 jsonDecode("") 抛裸 FormatException, 界面只显示
+  /// 「出错, 点击重试」且不会自动重试 -> 统一在通道层判定为瞬时失败
+  static const Set<String> _jsonResponseMethods = {
+    "comics",
+    "comic_search",
+    "page_view_log",
+    "album",
+    "chapter",
+    "categories",
+    "favorites",
+    "favorite",
+    "set_favorite",
+    "forum",
+    "comment",
+    "child_comment",
+    "games",
+    "last_search_histories",
+    "all_downloads",
+    "pre_login",
+    "login",
+    "week",
+    "week_filter",
+    "config_links",
+    "app_config",
+    "is_pro",
+    "pro_info_all",
+    // [patch] 分流接口返回 JSON, 空串/损坏数据按瞬时失败处理
+    "load_api_host_options",
+    "load_cdn_host_options",
+    "update_shunts",
+  };
+
   Future<String> _invoke(String method, dynamic params) async {
-    late String resp;
-    // if (Platform.isLinux) {
-    //   var req = await httpClient.post("127.0.0.1", 52764, "invoke");
-    //   req.add(utf8.encode(jsonEncode({
-    //     "method": method,
-    //     "params": params is String ? params : jsonEncode(params),
-    //   })));
-    //   var rsp = await req.close();
-    //   resp = await rsp.transform(utf8.decoder).join();
-    // } else
-    {
-      resp = await _channel.invokeMethod(
-          "invoke",
-          jsonEncode({
-            "method": method,
-            "params": params is String ? params : jsonEncode(params),
-          }));
+    final retryTimes =
+        _retryableMethods.contains(method) ? _invokeRetryTimes : 0;
+    for (var attempt = 0;; attempt++) {
+      try {
+        return await _invokeOnce(method, params);
+      } on _TransientFailure catch (e) {
+        // [patch] 网络抖动/通道未就绪 -> 退避重试, 而不是直接把「功能不可用」抛给用户
+        debugPrient("retry $method (${attempt + 1}) : ${e.message}");
+        if (attempt >= retryTimes) {
+          throw StateError(e.message);
+        }
+        await Future.delayed(Duration(milliseconds: 300 * (attempt + 1)));
+      }
+    }
+  }
+
+  Future<String> _invokeOnce(String method, dynamic params) async {
+    dynamic raw;
+    try {
+      raw = await _channel
+          .invokeMethod(
+              "invoke",
+              jsonEncode({
+                "method": method,
+                "params": params is String ? params : jsonEncode(params),
+              }))
+          .timeout(_invokeTimeout);
+    } on TimeoutException {
+      throw _TransientFailure("请求超时($method), 请检查网络后重试");
+    } on MissingPluginException {
+      throw _TransientFailure("后台服务未就绪($method), 请稍后重试");
+    } on PlatformException catch (e) {
+      throw _TransientFailure(
+          "后台调用失败($method): ${e.message ?? e.code}");
+    }
+    if (raw == null) {
+      throw _TransientFailure("后台返回空响应($method)");
+    }
+    final resp = raw is String ? raw : "$raw";
+
+    dynamic decoded;
+    try {
+      decoded = jsonDecode(resp);
+    } on FormatException {
+      throw _TransientFailure("响应格式异常($method)");
+    }
+    if (decoded is! Map) {
+      throw _TransientFailure("响应结构异常($method)");
     }
 
-    var response = _Response.fromJson(jsonDecode(resp));
+    // [patch] 响应解析容错: 后端 error_message/response_data 为 null 时不再炸在赋值处
+    var response = _Response.fromJson(decoded);
     if (response.errorMessage.isNotEmpty) {
       throw StateError(response.errorMessage);
+    }
+    if (_jsonResponseMethods.contains(method)) {
+      final data = response.responseData;
+      if (data.trim().isEmpty) {
+        // [patch] 后端返回「空串当成功」是这里最常见的瞬时故障形态
+        throw _TransientFailure("服务端返回空数据($method), 请稍后重试");
+      }
+      try {
+        jsonDecode(data);
+      } on FormatException {
+        throw _TransientFailure("服务端返回数据损坏($method), 请稍后重试");
+      }
     }
     return response.responseData;
   }
 
   Future init() {
     return _invoke("init_dart", "");
+  }
+
+  /// [patch] 统一把后端 JSON 字符串解成 Map: 结构不是对象时抛出可读错误,
+  /// 而不是在 fromJson 里抛一条 JSON 类型转换的裸异常
+  static Map<String, dynamic> _decodeMap(String rsp, String method) {
+    final decoded = jsonDecode(rsp);
+    if (decoded is Map) {
+      return decoded.cast<String, dynamic>();
+    }
+    throw StateError("服务端返回结构异常($method)");
+  }
+
+  /// [patch] 逐个解析列表项, 单条脏数据只丢这一条
+  static List<T> _parseList<T>(
+    List<dynamic> raw,
+    T Function(Map<String, dynamic>) build,
+  ) {
+    final result = <T>[];
+    for (final item in raw) {
+      if (item is! Map) {
+        continue;
+      }
+      try {
+        result.add(build(item.cast<String, dynamic>()));
+      } catch (_) {
+        continue;
+      }
+    }
+    return result;
   }
 
   Future init2() {
@@ -96,7 +325,7 @@ class Methods {
       "sort_by": sortBy.value,
       "page": page,
     });
-    final response = ComicsResponse.fromJson(jsonDecode(rsp));
+    final response = ComicsResponse.fromJson(_decodeMap(rsp, "comics"));
     for (final comic in response.content) {
       comic.sealed = matchComicSealedByRules(comic);
     }
@@ -113,7 +342,7 @@ class Methods {
       "sort_by": sortBy.value,
       "page": page,
     });
-    final response = ComicsResponse.fromJson(jsonDecode(rsp));
+    final response = ComicsResponse.fromJson(_decodeMap(rsp, "comic_search"));
     for (final comic in response.content) {
       comic.sealed = matchComicSealedByRules(comic);
     }
@@ -122,7 +351,7 @@ class Methods {
 
   Future<ComicsResponse> pageViewLog(int page) async {
     final rsp = await _invoke("page_view_log", page);
-    return ComicsResponse.fromJson(jsonDecode(rsp));
+    return ComicsResponse.fromJson(_decodeMap(rsp, "page_view_log"));
   }
 
   Future<dynamic> deleteViewLogByComicId(int comicId) async {
@@ -132,7 +361,7 @@ class Methods {
 
   Future<CategoriesResponse> categories() async {
     return CategoriesResponse.fromJson(
-        jsonDecode(await _invoke("categories", "")));
+        _decodeMap(await _invoke("categories", ""), "categories"));
   }
 
   Future saveImageFileToGallery(String path) {
@@ -148,44 +377,51 @@ class Methods {
   }
 
   Future<AlbumResponse> album(int id, {bool ignoreViewLog = false}) async {
-    return AlbumResponse.fromJson(jsonDecode(await _invoke("album", {
-      "id": id,
-      "ignore_view_log": ignoreViewLog,
-    })));
+    return AlbumResponse.fromJson(_decodeMap(
+        await _invoke("album", {
+          "id": id,
+          "ignore_view_log": ignoreViewLog,
+        }),
+        "album"));
   }
 
   Future<ChapterResponse> chapter(int id) async {
-    return ChapterResponse.fromJson(jsonDecode(await _invoke("chapter", id)));
+    return ChapterResponse.fromJson(
+        _decodeMap(await _invoke("chapter", id), "chapter"));
   }
 
   Future<CommentPage> forum(String? mode, int? aid, int? uid, int page) async {
-    return CommentPage.fromJson(jsonDecode(await _invoke("forum", {
-      "mode": mode,
-      "aid": aid,
-      "uid": uid,
-      "page": page,
-    })));
+    return CommentPage.fromJson(_decodeMap(
+        await _invoke("forum", {
+          "mode": mode,
+          "aid": aid,
+          "uid": uid,
+          "page": page,
+        }),
+        "forum"));
   }
 
   Future<Favorite> favorites(int folderId, int page, String o) async {
     return Favorite.fromJson(
-      jsonDecode(await _invoke("favorites", {
-        "folder_id": folderId,
-        "page": page,
-        "o": o,
-      })),
+      _decodeMap(
+          await _invoke("favorites", {
+            "folder_id": folderId,
+            "page": page,
+            "o": o,
+          }),
+          "favorites"),
     );
   }
 
   Future<Favorite> favorite() async {
     return Favorite.fromJson(
-      jsonDecode(await _invoke("favorite", "")),
+      _decodeMap(await _invoke("favorite", ""), "favorite"),
     );
   }
 
   Future<ActionResponse> setFavorite(int aid) async {
     return ActionResponse.fromJson(
-      jsonDecode(await _invoke("set_favorite", aid)),
+      _decodeMap(await _invoke("set_favorite", aid), "set_favorite"),
     );
   }
 
@@ -207,7 +443,7 @@ class Methods {
 
   Future<GamePage> games(int page) async {
     return GamePage.fromJson(
-      jsonDecode(await _invoke("games", page)),
+      _decodeMap(await _invoke("games", page), "games"),
     );
   }
 
@@ -220,11 +456,12 @@ class Methods {
   }
 
   Future<ViewLog?> findViewLog(int id) async {
-    final map = jsonDecode(await _invoke("find_view_log", id));
-    if (map == null) {
+    final decoded = jsonDecode(await _invoke("find_view_log", id));
+    if (decoded is! Map) {
+      // [patch] 后端返回 null/非对象时视为「没有阅读记录」, 不再崩
       return null;
     }
-    return ViewLog.fromJson(map);
+    return ViewLog.fromJson(decoded.cast<String, dynamic>());
   }
 
   Future cleanAllCache() async {
@@ -239,7 +476,7 @@ class Methods {
     if (cached != null && cached.isNotEmpty) {
       return cached;
     }
-    final path = await _invoke(method, comicId) as String;
+    final path = await _invoke(method, comicId);
     if (path.isNotEmpty) {
       _coverPathCache[key] = path;
     }
@@ -263,10 +500,10 @@ class Methods {
     }
     return _invoke("jm_page_image", {"id": id, "image_name": imageName})
         .then((path) {
-      if (path is String && path.isNotEmpty) {
+      if (path.isNotEmpty) {
         _coverPathCache[key] = path;
       }
-      return path as String;
+      return path;
     });
   }
 
@@ -302,7 +539,8 @@ class Methods {
   }
 
   Future<ImageSize> imageSize(String path) async {
-    return ImageSize.fromJson(jsonDecode(await _invoke("image_size", path)));
+    return ImageSize.fromJson(
+        _decodeMap(await _invoke("image_size", path), "image_size"));
   }
 
   Future httpGet(String versionUrl) {
@@ -325,18 +563,63 @@ class Methods {
     return _invoke("save_cdn_host", choose);
   }
 
+  // [patch] 分流候选/更新接口 (对齐上游 ComicSparks/jasmine):
+  // 旧版把候选域名焊死在 Dart 里, 官方换域名后写死的域名陆续 404/502,
+  // 表现为「搜索转圈」「图片刷不出来」。改由 Rust 侧下发并持久化。
+  Future<HostOptions> loadApiHostOptions() async {
+    return HostOptions.fromJson(
+      _decodeMap(
+        await _invoke("load_api_host_options", ""),
+        "load_api_host_options",
+      ),
+    );
+  }
+
+  Future<HostOptions> loadCdnHostOptions() async {
+    return HostOptions.fromJson(
+      _decodeMap(
+        await _invoke("load_cdn_host_options", ""),
+        "load_cdn_host_options",
+      ),
+    );
+  }
+
+  Future<String> addApiHostCustom(String host) {
+    return _invoke("add_api_host_custom", host);
+  }
+
+  Future removeApiHostCustom(String host) {
+    return _invoke("remove_api_host_custom", host);
+  }
+
+  Future<String> addCdnHostCustom(String host) {
+    return _invoke("add_cdn_host_custom", host);
+  }
+
+  Future removeCdnHostCustom(String host) {
+    return _invoke("remove_cdn_host_custom", host);
+  }
+
+  Future<UpdateShuntsResult> updateShunts() async {
+    return UpdateShuntsResult.fromJson(
+      _decodeMap(await _invoke("update_shunts", ""), "update_shunts"),
+    );
+  }
+
   Future<PreLoginResponse> preLogin() async {
     return PreLoginResponse.fromJson(
-      jsonDecode(await _invoke("pre_login", "")),
+      _decodeMap(await _invoke("pre_login", ""), "pre_login"),
     );
   }
 
   Future<SelfInfo> login(String username, String password) async {
     return SelfInfo.fromJson(
-      jsonDecode(await _invoke("login", {
-        "username": username,
-        "password": password,
-      })),
+      _decodeMap(
+          await _invoke("login", {
+            "username": username,
+            "password": password,
+          }),
+          "login"),
     );
   }
 
@@ -345,17 +628,21 @@ class Methods {
   }
 
   Future<CommentResponse> commentResponse(int aid, String comment) async {
-    return CommentResponse.fromJson(jsonDecode(await _invoke("comment", {
-      "aid": aid,
-      "comment": comment,
-    })));
+    return CommentResponse.fromJson(_decodeMap(
+        await _invoke("comment", {
+          "aid": aid,
+          "comment": comment,
+        }),
+        "comment"));
   }
 
   Future<CommentResponse> comment(int aid, String comment) async {
-    return CommentResponse.fromJson(jsonDecode(await _invoke("comment", {
-      "aid": aid,
-      "comment": comment,
-    })));
+    return CommentResponse.fromJson(_decodeMap(
+        await _invoke("comment", {
+          "aid": aid,
+          "comment": comment,
+        }),
+        "comment"));
   }
 
   Future<CommentResponse> childComment(
@@ -363,11 +650,13 @@ class Methods {
     String comment,
     int? commentId,
   ) async {
-    return CommentResponse.fromJson(jsonDecode(await _invoke("child_comment", {
-      "aid": aid,
-      "comment": comment,
-      "comment_id": commentId,
-    })));
+    return CommentResponse.fromJson(_decodeMap(
+        await _invoke("child_comment", {
+          "aid": aid,
+          "comment": comment,
+          "comment_id": commentId,
+        }),
+        "child_comment"));
   }
 
   Future<String> loadUsername() {
@@ -387,27 +676,30 @@ class Methods {
   }
 
   Future<List<SearchHistory>> lastSearchHistories(int count) async {
-    return List.of(jsonDecode(await _invoke("last_search_histories", "$count")))
-        .map((e) => SearchHistory.fromJson(e))
-        .toList()
-        .cast<SearchHistory>();
+    // [patch] 接口返回 null/非数组时给空历史, 不再让搜索面板崩掉
+    final raw = jsonDecode(await _invoke("last_search_histories", "$count"));
+    if (raw is! List) {
+      return const [];
+    }
+    return _parseList(raw, (e) => SearchHistory.fromJson(e));
   }
 
   /// 下载列表
   Future<List<DownloadAlbum>> allDownloads() async {
-    return List.of(jsonDecode(await _invoke("all_downloads", "")))
-        .map((e) => DownloadAlbum.fromJson(e))
-        .toList()
-        .cast<DownloadAlbum>();
+    final raw = jsonDecode(await _invoke("all_downloads", ""));
+    if (raw is! List) {
+      return const [];
+    }
+    return _parseList(raw, (e) => DownloadAlbum.fromJson(e));
   }
 
   /// 寻找下载
   Future<DownloadCreate?> downloadById(int id) async {
-    var map = jsonDecode(await _invoke("download_by_id", "$id"));
-    if (map == null) {
-      return map;
+    var decoded = jsonDecode(await _invoke("download_by_id", "$id"));
+    if (decoded is! Map) {
+      return null;
     }
-    return DownloadCreate.fromJson(map);
+    return DownloadCreate.fromJson(decoded.cast<String, dynamic>());
   }
 
   /// 创建下载
@@ -417,10 +709,11 @@ class Methods {
 
   /// 下载图片列表
   Future<List<DlImage>> dlImageByChapterId(int id) async {
-    return List.of(jsonDecode(await _invoke("dl_image_by_chapter_id", "$id")))
-        .map((e) => DlImage.fromJson(e))
-        .toList()
-        .cast<DlImage>();
+    final raw = jsonDecode(await _invoke("dl_image_by_chapter_id", "$id"));
+    if (raw is! List) {
+      return const [];
+    }
+    return _parseList(raw, (e) => DlImage.fromJson(e));
   }
 
   Future<dynamic> deleteDownload(int id) async {
@@ -566,11 +859,12 @@ class Methods {
   }
 
   Future<IsPro> isPro() async {
-    return IsPro.fromJson(jsonDecode(await _invoke("is_pro", "")));
+    return IsPro.fromJson(_decodeMap(await _invoke("is_pro", ""), "is_pro"));
   }
 
   Future<ProInfoAll> proInfoAll() async {
-    return ProInfoAll.fromJson(jsonDecode(await _invoke("pro_info_all", "")));
+    return ProInfoAll.fromJson(
+        _decodeMap(await _invoke("pro_info_all", ""), "pro_info_all"));
   }
 
   Future reloadPro() {
@@ -603,7 +897,8 @@ class Methods {
   }
 
   Future<int> load_download_thread() async {
-    return int.parse(await _invoke("load_download_thread", ""));
+    // [patch] 后端返回空串/非数字时回落默认线程数, 不再 int.parse 崩溃
+    return int.tryParse(await _invoke("load_download_thread", "")) ?? 3;
   }
 
   Future set_download_thread(int count) {
@@ -652,12 +947,13 @@ class Methods {
 
   Future<int> ping(String idx) async {
     debugPrient("PING API $idx");
-    return int.parse(await _invoke("ping_server", idx));
+    // [patch] 探测失败/返回空串时按 -1 处理, 不再让 int.parse 炸掉测速页
+    return int.tryParse(await _invoke("ping_server", idx)) ?? -1;
   }
 
   Future<int> pingCdn(String idx) async {
     debugPrient("PING CDN $idx");
-    return int.parse(await _invoke("ping_cdn", idx));
+    return int.tryParse(await _invoke("ping_cdn", idx)) ?? -1;
   }
 
   Future mkdirs(String path) {
@@ -691,19 +987,33 @@ class Methods {
   }
 
   Future<WeekData> week(int page) async {
-    return WeekData.fromJson(jsonDecode(await _invoke("week", {
-      "page": page,
-    })));
+    return WeekData.fromJson(_decodeMap(
+        await _invoke("week", {
+          "page": page,
+        }),
+        "week"));
   }
 
   Future<WeekFilterResponse> weekFilter(
       String categoryId, String typeId, int page) async {
-    return WeekFilterResponse.fromJson(jsonDecode(await _invoke("week_filter", {
-      "category_id": categoryId,
-      "type_id": typeId,
-      "page": page,
-    })));
+    return WeekFilterResponse.fromJson(_decodeMap(
+        await _invoke("week_filter", {
+          "category_id": categoryId,
+          "type_id": typeId,
+          "page": page,
+        }),
+        "week_filter"));
   }
+}
+
+/// [patch] 可重试的瞬时失败(超时/通道未就绪/空响应/脏 JSON), 与业务错误分开
+class _TransientFailure implements Exception {
+  final String message;
+
+  _TransientFailure(this.message);
+
+  @override
+  String toString() => message;
 }
 
 class _Response {
@@ -711,7 +1021,10 @@ class _Response {
   late String responseData;
 
   _Response.fromJson(Map json) {
-    errorMessage = json["error_message"];
-    responseData = json["response_data"];
+    // [patch] 容错解析: null / 非字符串一律归一成空串, 不再在这里抛类型错误
+    final error = json["error_message"];
+    final data = json["response_data"];
+    errorMessage = error == null ? "" : "$error";
+    responseData = data == null ? "" : (data is String ? data : "$data");
   }
 }

@@ -87,40 +87,66 @@ class _StreamPagerState extends State<_StreamPager> {
   int _nextPage = 1;
   int _total = 0;
 
+  /// [patch] 记住真实每页条数: 原实现用「本页返回条数」当分母,
+  /// 服务端偶发返回空页(total>0)时 total/0 = Infinity, 页数显示与
+  /// 上拉加载判断( _nextPage > _maxPage )全部失效
+  int _pageSize = 0;
+
   bool get _noPro => !isPro && _nextPage > _noProMax;
 
   var _joining = false;
   var _joinSuccess = true;
 
   Future _join() async {
+    if (_joining) {
+      return;
+    }
     try {
       setState(() {
         _joining = true;
+        _joinSuccess = true;
       });
       var response = await widget.onPage(_nextPage);
       // [patch] 屏蔽过滤: 封印/屏蔽词命中的条目直接从列表隐藏
       final list = response.list
           .where((comic) => !comic.sealed && !comicBlockedByTags(comic))
           .toList();
-      if (_nextPage == 1) {
-        if (_redirectAid(response.redirectAid, context)) {
-          return;
+      if (_nextPage == 1 && _redirectAid(response.redirectAid, context)) {
+        // [patch] 跳转到详情页时也要收回加载态, 否则原页面永久停在「加载中」
+        if (mounted) {
+          setState(() {
+            _joining = false;
+          });
         }
-        if (response.total == 0) {
-          _maxPage = 1;
-        } else {
-          _maxPage = (response.total / response.list.length).ceil();
-        }
-        _total = response.total;
+        return;
       }
-      _nextPage++;
-      _data.addAll(list);
+      if (response.list.isNotEmpty) {
+        _pageSize = response.list.length;
+      }
+      if (response.total <= 0) {
+        _maxPage = 1;
+      } else if (_pageSize > 0) {
+        _maxPage = (response.total / _pageSize).ceil();
+      } else {
+        // [patch] 拿不到每页条数时保守按 1 页处理, 绝不产生 Infinity/NaN
+        _maxPage = 1;
+      }
+      _total = response.total;
+      if (!mounted) {
+        return;
+      }
       setState(() {
-        _joinSuccess = true;
+        // [patch] 只有真正拿到数据后才推进页码, 失败重试不会跳页(原来在
+        // 异常路径之前就 _nextPage++, 重试时直接漏掉一页)
+        _data.addAll(list);
+        _nextPage++;
         _joining = false;
       });
     } catch (e, st) {
       debugPrient("$e\n$st");
+      if (!mounted) {
+        return;
+      }
       setState(() {
         _joinSuccess = false;
         _joining = false;
@@ -323,6 +349,10 @@ class _StreamPagerState extends State<_StreamPager> {
   }
 
   void _setState(EventArgs? args) {
+    // [patch] 全局 proEvent 广播可能晚于 dispose 到达, 未判 mounted 会抛
+    if (!mounted) {
+      return;
+    }
     setState(() {});
   }
 }
@@ -352,23 +382,33 @@ class _PagerPagerState extends State<_PagerPager> {
   late Future _pageFuture = _load();
   late Key _pageKey = UniqueKey();
 
+  /// [patch] 见 _StreamPagerState._pageSize: 用固定每页条数算总页数, 避免除零
+  int _pageSize = 0;
+
   Future<dynamic> _load() async {
     var response = await widget.onPage(_currentPage);
+    if (!mounted) {
+      return;
+    }
     // [patch] 屏蔽过滤: 封印/屏蔽词命中的条目直接从列表隐藏
     final list = response.list
         .where((comic) => !comic.sealed && !comicBlockedByTags(comic))
         .toList();
+    if (_currentPage == 1 && _redirectAid(response.redirectAid, context)) {
+      return;
+    }
+    if (response.list.isNotEmpty) {
+      _pageSize = response.list.length;
+    }
+    if (response.total <= 0) {
+      _maxPage = 1;
+    } else if (_pageSize > 0) {
+      _maxPage = (response.total / _pageSize).ceil();
+    } else {
+      // [patch] 空页且无历史页长时保守按 1 页处理, 绝不产生 Infinity
+      _maxPage = 1;
+    }
     setState(() {
-      if (_currentPage == 1) {
-        if (_redirectAid(response.redirectAid, context)) {
-          return;
-        }
-        if (response.total == 0) {
-          _maxPage = 1;
-        } else {
-          _maxPage = (response.total / response.list.length).ceil();
-        }
-      }
       _data.clear();
       _data.addAll(list);
     });

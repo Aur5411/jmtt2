@@ -2,8 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:jasmine/basic/commons.dart';
 import 'package:jasmine/basic/methods.dart';
 
-import 'network_api_host.dart';
-import 'network_cdn_host.dart';
+import 'network_shunts.dart' as shunts;
 
 const _propertyName = "auto_best_host";
 
@@ -27,14 +26,13 @@ Future<void> setAutoBestHost(bool value) async {
 }
 
 /// 后台测速 API 与 CDN, 切到最快的源 (不阻塞启动)
+/// [patch] 候选域名改由 network_shunts(autoSelectBestHosts) 从 Rust 侧取,
+/// 不再使用 Dart 里焊死的旧域名列表
 Future<void> autoSelectBestHosts() async {
   if (!autoBestHost) {
     return;
   }
-  await Future.wait([
-    autoSelectBestApiHost(),
-    autoSelectBestCdnHost(),
-  ]);
+  await shunts.autoSelectBestHosts();
 }
 
 /// 设置页开关

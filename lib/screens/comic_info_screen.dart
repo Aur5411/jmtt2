@@ -322,34 +322,71 @@ class _ComicInfoScreenState extends State<ComicInfoScreen> with RouteAware {
   }
 
   Future _changeFavourite(AlbumResponse data) async {
+    if (_favouriteLoading) {
+      // [patch] 防连点: 上次请求还没回来时重复点击会产生「收藏/取消收藏」互相覆盖
+      return;
+    }
     setState(() {
       _favouriteLoading = true;
     });
     try {
       await methods.setFavorite(data.id);
+      if (!mounted) {
+        return;
+      }
       setState(() {
         data.isFavorite = !data.isFavorite;
       });
-      defaultToast(context, "收藏成功");
-      if (data.isFavorite && favData.isNotEmpty) {
-        var j = favData.map((i) {
-          return MapEntry(i.name, i.fid);
-        }).toList();
-        j.add(const MapEntry("默认 / 不移动", 0));
-        var v = await chooseMapDialog<int>(
-          context,
-          title: "移动到资料夹",
-          values: Map.fromEntries(j),
-        );
-        if (v != null && v != 0) {
-          await methods.comicFavoriteFolderMove(data.id, v);
+      defaultToast(context, data.isFavorite ? "收藏成功" : "已取消收藏");
+      if (data.isFavorite) {
+        // [patch] 收藏后文件夹列表可能是空的(启动时 fav() 失败过), 这里补拉一次,
+        // 否则用户永远弹不出「移动到资料夹」, 只能停在默认收藏夹
+        if (favData.isEmpty) {
+          await fav(context);
         }
-        defaultToast(context, "移动成功");
+        if (!mounted) {
+          return;
+        }
+        if (favData.isNotEmpty) {
+          var j = favData.map((i) {
+            return MapEntry(i.name, i.fid);
+          }).toList();
+          j.add(const MapEntry("默认 / 不移动", 0));
+          var v = await chooseMapDialog<int>(
+            context,
+            title: "移动到资料夹",
+            values: Map.fromEntries(j),
+          );
+          if (!mounted) {
+            return;
+          }
+          if (v != null && v != 0) {
+            try {
+              await methods.comicFavoriteFolderMove(data.id, v);
+              if (mounted) {
+                defaultToast(context, "移动成功");
+              }
+            } catch (e) {
+              // [patch] 移动失败要说人话, 别再无条件提示「移动成功」
+              if (mounted) {
+                defaultToast(context, "移动失败: $e (收藏已保留在默认文件夹)");
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      // [patch] 原实现没有 catch, setFavorite 失败时用户只看到按钮弹回,
+      // 既不知道失败也没有重试入口
+      if (mounted) {
+        defaultToast(context, "收藏操作失败: $e");
       }
     } finally {
-      setState(() {
-        _favouriteLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _favouriteLoading = false;
+        });
+      }
     }
   }
 }

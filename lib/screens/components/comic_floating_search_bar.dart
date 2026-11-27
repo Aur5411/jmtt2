@@ -71,6 +71,12 @@ class _ComicFloatingSearchBarScreenState
   }
 
   void _setState(_) {
+    // [patch] 全局 Event 是文件级单例, 广播可能晚于页面 dispose 到达,
+    // 原来不判 mounted 会抛 "setState() called after dispose()",
+    // 表现为搜索面板偶发白屏/报错
+    if (!mounted) {
+      return;
+    }
     setState(() {});
   }
 
@@ -114,9 +120,16 @@ class _ComicFloatingSearchBarScreenState
         title: "清除所有历史记录?",
       );
       if ("是" == choose) {
-        await methods.clearAllSearchLog();
-        _histories.clear();
-        _setState(null);
+        // [patch] 清历史失败时不要让点击「毫无反应」: 失败给提示并保留原列表
+        try {
+          await methods.clearAllSearchLog();
+          _histories.clear();
+          _setState(null);
+        } catch (e) {
+          if (mounted) {
+            defaultToast(context, "清除历史失败: $e");
+          }
+        }
       }
     }));
     widgets.add(Wrap(
@@ -132,9 +145,16 @@ class _ComicFloatingSearchBarScreenState
               title: "清除历史记录\"${e.searchQuery}\"?",
             );
             if ("是" == choose) {
-              await methods.clearASearchLog(e.searchQuery);
-              _histories.remove(e);
-              _setState(null);
+              // [patch] 同上: 单条清除失败要有反馈
+              try {
+                await methods.clearASearchLog(e.searchQuery);
+                _histories.remove(e);
+                _setState(null);
+              } catch (err) {
+                if (mounted) {
+                  defaultToast(context, "清除历史失败: $err");
+                }
+              }
             }
           },
           child: Container(
